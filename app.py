@@ -15,8 +15,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_API_KEY = "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"
+OPENAI_MODEL="gpt-5.5-mini"
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+# Set when using Pen AI or another OpenAI-compatible provider.
+OPENAI_BASE_URL="https://api.openai.com/v1"
+
 # Set this to a provider's OpenAI-compatible /v1 endpoint (including Pen AI, if
 # applicable). It defaults to the official OpenAI API.
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -125,7 +129,6 @@ def openai_chat(history: list[dict]) -> dict:
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
-        "temperature": 0.35,
         "response_format": {"type": "json_object"},
     }
     url = f"{OPENAI_BASE_URL}/chat/completions"
