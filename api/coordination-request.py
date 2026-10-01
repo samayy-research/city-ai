@@ -81,7 +81,7 @@ class handler(BaseHTTPRequestHandler):
                 f"Request:\n{message}"
             )
             mailto_url = "mailto:" + urllib.parse.quote(city_email) + "?" + urllib.parse.urlencode(
-                {"subject": subject, "body": email_body}
+                {"subject": subject, "body": email_body}, quote_via=urllib.parse.quote
             )
             self.send_json(200, {"mailtoUrl": mailto_url})
         except (ValueError, json.JSONDecodeError) as exc:
