@@ -63,6 +63,8 @@ class handler(BaseHTTPRequestHandler):
             name, email = text(data.get("name"), 120), text(data.get("email"), 254)
             address, message = text(data.get("projectAddress"), 300), text(data.get("message"), 1200)
             route, team = text(data.get("route"), 200), text(data.get("team"), 200)
+            checklist = text(data.get("checklist"), 8_000)
+            recipient = text(data.get("recipient"), 254)
             token = text(data.get("turnstileToken"), 2048)
             if not all((name, valid_email(email), address, message, route, team, token)):
                 raise ValueError("Complete all required fields and verification.")
@@ -70,7 +72,11 @@ class handler(BaseHTTPRequestHandler):
             if not verify_turnstile(token, remote_ip):
                 self.send_json(400, {"error": "Verification expired or failed. Please try again."})
                 return
-            city_email = os.environ.get("CITY_COORDINATION_EMAIL", "")
+            # Department buttons can use the official COJ contacts shown in the UI.
+            # The overall request continues to use the configured coordination inbox.
+            if recipient and not recipient.lower().endswith("@coj.net"):
+                raise ValueError("The selected City email address is not valid.")
+            city_email = recipient or os.environ.get("CITY_COORDINATION_EMAIL", "")
             if not valid_email(city_email):
                 raise RuntimeError("The City request form has not been configured yet.")
             subject = f"Coordination request: {route}"
@@ -79,6 +85,7 @@ class handler(BaseHTTPRequestHandler):
                 f"Recommended group: {team}\nProject route: {route}\n\n"
                 f"Name: {name}\nEmail: {email}\nProject address or parcel: {address}\n\n"
                 f"Request:\n{message}"
+                + (f"\n\nPreliminary checklist for this request:\n{checklist}" if checklist else "")
             )
             mailto_url = "mailto:" + urllib.parse.quote(city_email) + "?" + urllib.parse.urlencode(
                 {"subject": subject, "body": email_body}, quote_via=urllib.parse.quote
