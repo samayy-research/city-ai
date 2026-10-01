@@ -1,11 +1,11 @@
-"""Vercel serverless endpoint for the Gemini-backed advisor chat."""
+"""Vercel serverless endpoint for the OpenAI-compatible advisor chat."""
 
 from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler
 
-from app import gemini_chat
+from app import openai_chat
 
 
 class handler(BaseHTTPRequestHandler):
@@ -30,7 +30,7 @@ class handler(BaseHTTPRequestHandler):
             history = data.get("history")
             if not isinstance(history, list) or not history:
                 raise ValueError("A project description is required")
-            self.send_json(200, gemini_chat(history))
+            self.send_json(200, openai_chat(history))
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except RuntimeError as exc:

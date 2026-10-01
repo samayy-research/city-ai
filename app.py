@@ -1,7 +1,7 @@
 """Single-file Jacksonville project-readiness chat application.
 
 Run with:  python app.py
-Set GEMINI_API_KEY before starting the server.  No Python packages are needed.
+Set OPENAI_API_KEY before starting the server. No Python packages are needed.
 """
 from __future__ import annotations
 
@@ -15,8 +15,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
-API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+# Set this to a provider's OpenAI-compatible /v1 endpoint (including Pen AI, if
+# applicable). It defaults to the official OpenAI API.
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "")
 
 SYSTEM_PROMPT = """You are Jax Project Advisor, a warm, precise City of Jacksonville
@@ -110,35 +113,39 @@ def page_html() -> str:
     )
 
 
-def gemini_chat(history: list[dict]) -> dict:
-    if not API_KEY:
-        raise RuntimeError("The server is missing GEMINI_API_KEY. Add it to the environment, then restart the server.")
-    contents = []
+def openai_chat(history: list[dict]) -> dict:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("The server is missing OPENAI_API_KEY. Add it to the environment, then restart the server.")
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in history[-16:]:
-        role = "model" if turn.get("role") == "model" else "user"
+        role = "assistant" if turn.get("role") == "model" else "user"
         text = str(turn.get("text", "")).strip()[:6000]
         if text:
-            contents.append({"role": role, "parts": [{"text": text}]})
-    payload = {"system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]}, "contents": contents,
-               "generationConfig": {"temperature": 0.35, "responseMimeType": "application/json"}}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+            messages.append({"role": role, "content": text})
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "temperature": 0.35,
+        "response_format": {"type": "json_object"},
+    }
+    url = f"{OPENAI_BASE_URL}/chat/completions"
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
-        headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY})
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"})
     try:
         with urllib.request.urlopen(request, timeout=45) as response:
             raw = json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:500]
-        raise RuntimeError(f"Gemini request failed ({exc.code}): {detail}") from exc
+        raise RuntimeError(f"OpenAI-compatible request failed ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError("Could not reach Gemini. Check the network and API configuration.") from exc
+        raise RuntimeError("Could not reach the AI provider. Check the network and API configuration.") from exc
     try:
-        text = raw["candidates"][0]["content"]["parts"][0]["text"]
+        text = raw["choices"][0]["message"]["content"]
         result = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Gemini returned an unreadable response. Please try again.") from exc
+        raise RuntimeError("The AI provider returned an unreadable response. Please try again.") from exc
     if result.get("stage") not in ("follow_up", "final") or not isinstance(result.get("message"), str):
-        raise RuntimeError("Gemini returned an unexpected response. Please try again.")
+        raise RuntimeError("The AI provider returned an unexpected response. Please try again.")
     return result
 
 
@@ -165,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size).decode())
             history = data.get("history")
             if not isinstance(history, list) or not history: raise ValueError("A project description is required")
-            self.send_json(200, gemini_chat(history))
+            self.send_json(200, openai_chat(history))
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except RuntimeError as exc:
