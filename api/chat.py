@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler
 
-from app import openai_chat
+from app import MAX_REQUEST_BYTES, ProviderError, add_security_headers, openai_chat
 
 
 class handler(BaseHTTPRequestHandler):
@@ -18,13 +18,16 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        add_security_headers(self)
         self.end_headers()
         self.wfile.write(body)
 
     def do_POST(self):
         try:
+            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+                raise ValueError("Content-Type must be application/json")
             size = int(self.headers.get("Content-Length", "0"))
-            if not 2 <= size <= 100000:
+            if not 2 <= size <= MAX_REQUEST_BYTES:
                 raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(size).decode("utf-8"))
             history = data.get("history")
@@ -33,7 +36,7 @@ class handler(BaseHTTPRequestHandler):
             self.send_json(200, openai_chat(history))
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
-        except RuntimeError as exc:
+        except ProviderError as exc:
             self.send_json(502, {"error": str(exc)})
         except Exception:
             self.send_json(500, {"error": "Unexpected server error."})
@@ -41,4 +44,5 @@ class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Allow", "POST, OPTIONS")
+        add_security_headers(self)
         self.end_headers()

@@ -10,6 +10,8 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
+from app import MAX_REQUEST_BYTES, add_security_headers
+
 
 def text(value: object, maximum: int) -> str:
     return value.strip()[:maximum] if isinstance(value, str) else ""
@@ -46,13 +48,16 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        add_security_headers(self)
         self.end_headers()
         self.wfile.write(body)
 
     def do_POST(self):
         try:
+            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+                raise ValueError("Content-Type must be application/json")
             size = int(self.headers.get("Content-Length", "0"))
-            if not 2 <= size <= 100000:
+            if not 2 <= size <= MAX_REQUEST_BYTES:
                 raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(size).decode("utf-8"))
             name, email = text(data.get("name"), 120), text(data.get("email"), 254)
@@ -66,7 +71,7 @@ class handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "Verification expired or failed. Please try again."})
                 return
             city_email = os.environ.get("CITY_COORDINATION_EMAIL", "")
-            if not city_email:
+            if not valid_email(city_email):
                 raise RuntimeError("The City request form has not been configured yet.")
             subject = f"Coordination request: {route}"
             email_body = (
@@ -89,4 +94,5 @@ class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Allow", "POST, OPTIONS")
+        add_security_headers(self)
         self.end_headers()

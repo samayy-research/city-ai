@@ -6,7 +6,9 @@ Set OPENAI_API_KEY before starting the server. No Python packages are needed.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import ssl
 from html import escape
 import urllib.error
 import urllib.request
@@ -15,16 +17,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
-OPENAI_API_KEY = "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"
-OPENAI_MODEL="gpt-5.5-mini"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 # Set when using Pen AI or another OpenAI-compatible provider.
-OPENAI_BASE_URL="https://api.openai.com/v1"
-
-# Set this to a provider's OpenAI-compatible /v1 endpoint (including Pen AI, if
-# applicable). It defaults to the official OpenAI API.
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "")
+OPENAI_TIMEOUT_SECONDS = 45
+MAX_REQUEST_BYTES = 100_000
+MAX_HISTORY_TURNS = 16
+MAX_TURN_CHARS = 6_000
+
+logger = logging.getLogger(__name__)
+
+
+class ProviderError(RuntimeError):
+    """An upstream AI provider failure that is safe to show to visitors."""
+
+
+def add_security_headers(handler: BaseHTTPRequestHandler) -> None:
+    """Add baseline browser protections to every first-party response."""
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    handler.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+    handler.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    handler.send_header(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+        "form-action 'self' mailto:; connect-src 'self'; img-src 'self' data:; "
+        "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
+        "style-src 'self' 'unsafe-inline'",
+    )
 
 SYSTEM_PROMPT = """You are Jax Project Advisor, a warm, precise City of Jacksonville
 project-readiness assistant. You help a prospective applicant understand likely permit
@@ -121,9 +143,14 @@ def openai_chat(history: list[dict]) -> dict:
     if not OPENAI_API_KEY:
         raise RuntimeError("The server is missing OPENAI_API_KEY. Add it to the environment, then restart the server.")
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for turn in history[-16:]:
+    for turn in history[-MAX_HISTORY_TURNS:]:
+        if not isinstance(turn, dict):
+            continue
         role = "assistant" if turn.get("role") == "model" else "user"
-        text = str(turn.get("text", "")).strip()[:6000]
+        text = turn.get("text", "")
+        if not isinstance(text, str):
+            continue
+        text = text.strip()[:MAX_TURN_CHARS]
         if text:
             messages.append({"role": role, "content": text})
     payload = {
@@ -135,13 +162,14 @@ def openai_chat(history: list[dict]) -> dict:
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"})
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=OPENAI_TIMEOUT_SECONDS) as response:
             raw = json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:500]
-        raise RuntimeError(f"OpenAI-compatible request failed ({exc.code}): {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError("Could not reach the AI provider. Check the network and API configuration.") from exc
+        logger.warning("AI provider returned HTTP %s", exc.code)
+        raise ProviderError("The advisor is temporarily unavailable. Please try again shortly.") from exc
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
+        logger.warning("AI provider could not be reached: %s", type(exc).__name__)
+        raise ProviderError("The advisor is temporarily unavailable. Please try again shortly.") from exc
     try:
         text = raw["choices"][0]["message"]["content"]
         result = json.loads(text)
@@ -160,25 +188,28 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(data).encode()
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store")
+        add_security_headers(self)
         self.end_headers(); self.wfile.write(body)
 
     def do_GET(self):
         if self.path != "/": self.send_error(404); return
         body = page_html().encode(); self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_header("Content-Length", str(len(body))); add_security_headers(self); self.end_headers(); self.wfile.write(body)
 
     def do_POST(self):
         if self.path != "/api/chat": self.send_error(404); return
         try:
+            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+                raise ValueError("Content-Type must be application/json")
             size = int(self.headers.get("Content-Length", "0"))
-            if not 2 <= size <= 100000: raise ValueError("Invalid request size")
+            if not 2 <= size <= MAX_REQUEST_BYTES: raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(size).decode())
             history = data.get("history")
             if not isinstance(history, list) or not history: raise ValueError("A project description is required")
             self.send_json(200, openai_chat(history))
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
-        except RuntimeError as exc:
+        except ProviderError as exc:
             self.send_json(502, {"error": str(exc)})
         except Exception:
             self.send_json(500, {"error": "Unexpected server error."})
