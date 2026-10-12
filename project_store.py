@@ -7,11 +7,33 @@ import re
 import secrets
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
 RETENTION_SECONDS = 7 * 24 * 60 * 60
+
+
+class StorageError(RuntimeError):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+def redis_credentials() -> tuple[str,str]:
+    # Never mix a URL from one configured store with a token from another.
+    url, token = os.environ.get("UPSTASH_REDIS_REST_URL", ""), os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if url or token:
+        return url, token
+    return os.environ.get("KV_REST_API_URL", ""), os.environ.get("KV_REST_API_TOKEN", "")
+
+
+def validate_configuration() -> None:
+    if use_redis():
+        url, token = redis_credentials()
+        if not url.startswith("https://") or not token:
+            raise StorageError("Saved-project storage is not configured for this deployment. The app owner needs to connect its shared database and redeploy.", "storage_not_configured")
 
 
 def project_id(value: object) -> str:
@@ -25,20 +47,26 @@ def new_id() -> str:
 
 
 def redis_command(command: list) -> object:
-    url, token = os.environ.get("UPSTASH_REDIS_REST_URL", ""), os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-    if not url.startswith("https://") or not token:
-        raise RuntimeError("Configure UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN for saved projects on Vercel.")
+    validate_configuration()
+    url, token = redis_credentials()
     request = urllib.request.Request(url.rstrip("/"), data=json.dumps(command).encode(), method="POST",
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        result = json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401,403}:
+            raise StorageError("The shared database rejected the deployment credentials. The app owner needs to check the database connection.", "storage_authentication_failed") from exc
+        raise StorageError("Saved-project storage is temporarily unavailable. Please retry shortly.", "storage_unavailable") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise StorageError("Saved-project storage is temporarily unavailable. Please retry shortly.", "storage_unavailable") from exc
     if "error" in result:
-        raise RuntimeError("Saved-project storage is temporarily unavailable.")
+        raise StorageError("Saved-project storage is temporarily unavailable. Please retry shortly.", "storage_unavailable")
     return result.get("result")
 
 
 def use_redis() -> bool:
-    return bool(os.environ.get("VERCEL") or os.environ.get("UPSTASH_REDIS_REST_URL"))
+    return bool(os.environ.get("VERCEL") or os.environ.get("UPSTASH_REDIS_REST_URL") or os.environ.get("UPSTASH_REDIS_REST_TOKEN") or os.environ.get("KV_REST_API_URL") or os.environ.get("KV_REST_API_TOKEN"))
 
 
 @contextmanager

@@ -57,6 +57,22 @@ class ProviderError(RuntimeError):
     """An upstream AI provider failure that is safe to show to visitors."""
 
 
+class ConfigurationError(RuntimeError):
+    code = "model_not_configured"
+
+
+def deployment_readiness() -> dict:
+    """Expose configuration presence only; never expose credentials or database URLs."""
+    try:
+        project_store.validate_configuration()
+        storage_ready = True
+    except project_store.StorageError:
+        storage_ready = False
+    return {"ready":bool(OPENAI_API_KEY) and storage_ready,
+            "checks":{"model_configured":bool(OPENAI_API_KEY), "storage_configured":storage_ready},
+            "version":"20261012-deployment-check1"}
+
+
 def add_security_headers(handler: BaseHTTPRequestHandler) -> None:
     """Add baseline browser protections to every first-party response."""
     handler.send_header("X-Content-Type-Options", "nosniff")
@@ -309,6 +325,10 @@ def openai_chat(history: list[dict], project: dict) -> dict:
 def chat_request(data: dict) -> dict:
     if not isinstance(data, dict):
         raise ValueError("A project message is required.")
+    # Validate dependencies before loading a project or spending on any model calls.
+    project_store.validate_configuration()
+    if not OPENAI_API_KEY:
+        raise ConfigurationError("The advisor's AI service is not configured for this deployment. The app owner needs to finish the server configuration and redeploy.")
     identifier = data.get("projectId")
     record = project_store.load(identifier) if identifier else {"project": empty_project(), "history": [], "result": None}
     record["project"] = upgrade_project(record["project"])
@@ -342,6 +362,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/health":
+            readiness=deployment_readiness()
+            self.send_json(200 if readiness["ready"] else 503, readiness)
+            return
         assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css")}
         if path in assets:
             filename, content_type = assets[path]
@@ -372,6 +396,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
         except ProviderError as exc:
             self.send_json(502, {"error": str(exc)})
+        except (ConfigurationError, project_store.StorageError) as exc:
+            logger.error("Deployment dependency error: %s", exc.code)
+            self.send_json(503, {"error":str(exc), "code":exc.code})
         except Exception:
             # Keep the browser response safe, but make the full traceback available
             # in the local server console and in the deployment's function logs.

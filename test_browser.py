@@ -180,8 +180,8 @@ class BrowserTests(unittest.TestCase):
                     self.end_headers();self.wfile.write(body)
                 else:super().do_GET()
         with tempfile.TemporaryDirectory() as temporary:
-            environment={"PROJECT_DB_PATH":str(Path(temporary)/'projects.sqlite3'), "VERCEL":"", "UPSTASH_REDIS_REST_URL":""}
-            with patch.dict(os.environ,environment), patch.object(app,'TURNSTILE_SITE_KEY',''), patch.object(app,'openai_chat',side_effect=fake_model), patch.object(coordination,'verify_turnstile',return_value=True):
+            environment={"PROJECT_DB_PATH":str(Path(temporary)/'projects.sqlite3'), "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "UPSTASH_REDIS_REST_TOKEN":"", "KV_REST_API_URL":"", "KV_REST_API_TOKEN":""}
+            with patch.dict(os.environ,environment), patch.object(app,'OPENAI_API_KEY','test'), patch.object(app,'TURNSTILE_SITE_KEY',''), patch.object(app,'openai_chat',side_effect=fake_model), patch.object(coordination,'verify_turnstile',return_value=True):
                 server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
                 thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
                 try:

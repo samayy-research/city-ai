@@ -30,11 +30,21 @@ Add these Environment Variables in Vercel before deploying:
 - `OPENAI_API_KEY` (required)
 - `OPENAI_MODEL` (optional; defaults to `gpt-4.1-mini`)
 - `OPENAI_BASE_URL` (optional; defaults to `https://api.openai.com/v1`)
-- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (required on Vercel for shared, durable project state)
+- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or `KV_REST_API_URL` and `KV_REST_API_TOKEN` (one matching pair required on Vercel for shared, durable project state)
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (required to enable the protected City coordination-email form)
 - `CITY_COORDINATION_EMAIL` (required to enable the protected City coordination-email form)
 
 Vercel routes `/` to the app page, serves `advisor.js` as a static asset, and exposes `/api/chat` and `/api/coordination-request`. The local Python server serves those same paths. The email workflow validates the Turnstile token and returns a short draft for review. The visitor then chooses to open their email app; no email is sent by this application.
+
+### Connect Redis and redeploy
+
+1. Install the Upstash Redis integration from Vercel Marketplace, create or select a database, and connect it to this Vercel project for Production (and Preview if needed).
+2. In Project Settings → Environment Variables, confirm that one complete REST URL/token pair is present. Use the read/write REST token, not a read-only token or the `redis://` connection string. Do not commit credentials to Git or paste them into chat.
+3. Ensure `OPENAI_API_KEY` and, for a non-OpenAI provider, `OPENAI_BASE_URL` / `OPENAI_MODEL` are also set for Production. The local `.env` file is intentionally not uploaded.
+4. Redeploy the latest commit after connecting the database or changing environment variables. No tables or manual data upload are needed; the app creates expiring Redis project keys automatically.
+5. Visit `/api/health`. It reports whether model and storage settings are present without exposing their values. `ready: true` means configuration is present, not that upstream credentials have been authenticated; submit a test chat to verify the full flow.
+
+Chat checks configuration before model calls. Missing settings return a specific HTTP 503/code instead of a generic 500. The Upstash names take precedence if supplied, and credentials are never mixed across two store configurations.
 
 ## What it does
 

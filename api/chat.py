@@ -6,7 +6,8 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler
 
-from app import MAX_REQUEST_BYTES, ProviderError, add_security_headers, chat_request
+from app import MAX_REQUEST_BYTES, ProviderError, ConfigurationError, add_security_headers, chat_request
+from project_store import StorageError
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ class handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
         except ProviderError as exc:
             self.send_json(502, {"error": str(exc)})
+        except (ConfigurationError, StorageError) as exc:
+            logger.error("Deployment dependency error: %s", exc.code)
+            self.send_json(503, {"error":str(exc), "code":exc.code})
         except Exception:
             logger.exception("Unexpected error while processing /api/chat")
             self.send_json(500, {"error": "Unexpected server error."})

@@ -94,10 +94,14 @@ class StateAndApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.environment = patch.dict(os.environ, {"PROJECT_DB_PATH":os.path.join(self.temp.name, "projects.sqlite3"),
-                                                  "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "CITY_COORDINATION_EMAIL":"city@example.com"})
+                                                  "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "UPSTASH_REDIS_REST_TOKEN":"",
+                                                  "KV_REST_API_URL":"", "KV_REST_API_TOKEN":"", "CITY_COORDINATION_EMAIL":"city@example.com"})
         self.environment.start()
+        self.model_configuration=patch.object(app,"OPENAI_API_KEY","test")
+        self.model_configuration.start()
 
     def tearDown(self):
+        self.model_configuration.stop()
         self.environment.stop()
         self.temp.cleanup()
 
@@ -165,6 +169,44 @@ class StateAndApiTests(unittest.TestCase):
         mobility=next(step for step in brief["action_plan"] if step["id"]=='mobility')
         self.assertEqual(mobility["status"],"unresolved")
         self.assertIn('not the actual mobility fee',mobility["exceptions"])
+
+
+class DeploymentConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.environment=patch.dict(os.environ,{"VERCEL":"1","UPSTASH_REDIS_REST_URL":"","UPSTASH_REDIS_REST_TOKEN":"",
+                                               "KV_REST_API_URL":"","KV_REST_API_TOKEN":""})
+        self.environment.start()
+
+    def tearDown(self):
+        self.environment.stop()
+
+    def test_missing_storage_is_reported_before_model_calls(self):
+        with patch.object(app,"openai_chat") as model:
+            with self.assertRaises(project_store.StorageError) as raised:
+                app.chat_request({"message":"A restaurant renovation"})
+            self.assertEqual(raised.exception.code,"storage_not_configured")
+            model.assert_not_called()
+
+    def test_vercel_kv_aliases_are_supported(self):
+        with patch.dict(os.environ,{"KV_REST_API_URL":"https://example.upstash.io","KV_REST_API_TOKEN":"test-token"}):
+            project_store.validate_configuration()
+            self.assertEqual(project_store.redis_credentials(),("https://example.upstash.io","test-token"))
+
+    def test_partial_credentials_are_not_mixed_between_stores(self):
+        with patch.dict(os.environ,{"UPSTASH_REDIS_REST_URL":"https://first.upstash.io","KV_REST_API_TOKEN":"other-store-token"}):
+            with self.assertRaises(project_store.StorageError):project_store.validate_configuration()
+
+    def test_readiness_exposes_no_credential_values(self):
+        with patch.object(app,"OPENAI_API_KEY","private-model-key"),patch.dict(os.environ,{"UPSTASH_REDIS_REST_URL":"https://private.upstash.io","UPSTASH_REDIS_REST_TOKEN":"private-store-token"}):
+            result=app.deployment_readiness()
+            self.assertTrue(result["ready"])
+            self.assertNotIn("private",json.dumps(result))
+
+    def test_missing_model_configuration_has_distinct_error(self):
+        with patch.object(app,"OPENAI_API_KEY",""),patch.dict(os.environ,{"VERCEL":""}):
+            with self.assertRaises(app.ConfigurationError) as raised:
+                app.chat_request({"message":"A restaurant renovation"})
+            self.assertEqual(raised.exception.code,"model_not_configured")
 
 
 if __name__ == "__main__":
