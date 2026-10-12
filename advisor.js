@@ -2,7 +2,10 @@ const chat = document.querySelector('#chat');
 const form = document.querySelector('#form');
 const input = document.querySelector('#message');
 const send = document.querySelector('#send');
-let projectId = sessionStorage.getItem('jax-project-id') || '';
+const persistentMode = window.PROJECT_STORAGE_MODE === 'persistent';
+let projectId = persistentMode ? sessionStorage.getItem('jax-project-id') || '' : '';
+let demoState = '';
+if (!persistentMode) sessionStorage.removeItem('jax-project-id');
 let currentBrief = null;
 let currentProject = null;
 let pending = false;
@@ -152,7 +155,7 @@ function coordinationForm(container, brief) {
     if(!token){previewStatus.textContent='Complete the security verification first.';return;}
     button.disabled=true; button.textContent='Preparing draft…'; open.hidden=true;
     try {
-      const response=await fetch('/api/coordination-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,name:name.value,email:email.value,projectAddress:address.value,note:note.value,team:select.value,turnstileToken:token})});
+      const response=await fetch('/api/coordination-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(persistentMode?{projectId}:{state:demoState}),name:name.value,email:email.value,projectAddress:address.value,note:note.value,team:select.value,turnstileToken:token})});
       const result=await response.json(); if(!response.ok)throw Error(result.error || 'Unable to prepare the email.');
       preview.textContent=''; preview.append(node('strong',result.subject),node('pre',result.body));
       open.href=result.mailtoUrl; open.hidden=false; previewStatus.textContent='Review the draft, then open it in your email app. Nothing has been sent.';
@@ -162,7 +165,8 @@ function coordinationForm(container, brief) {
 }
 function resetProject() {
   if(pending)return;
-  projectId=''; currentProject=null; currentBrief=null; sessionStorage.removeItem('jax-project-id');
+  projectId=''; demoState=''; currentProject=null; currentBrief=null;
+  if (persistentMode) sessionStorage.removeItem('jax-project-id');
   chat.textContent=''; form.classList.remove('has-context'); input.value=''; input.placeholder='Tell me what you are planning…';
   bubble('Hi — tell me about the project you are considering. A simple description is enough to start.'); input.focus();
 }
@@ -171,9 +175,12 @@ form.onsubmit=async event=>{
   pending=true; send.disabled=true; input.disabled=true; send.textContent='Thinking…';
   const user=bubble(message,'user'); const loading=bubble('Thinking through your project…'); loading.classList.add('pending');
   try {
-    const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,message})});
+    const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(persistentMode?{projectId}:{state:demoState}),message})});
     const result=await response.json(); if(!response.ok)throw Error(result.error || 'The advisor could not respond.');
-    loading.remove(); projectId=result.projectId; sessionStorage.setItem('jax-project-id',projectId); currentProject=result.project;
+    loading.remove();
+    if (persistentMode) {projectId=result.projectId; sessionStorage.setItem('jax-project-id',projectId);}
+    else demoState=result.state || '';
+    currentProject=result.project;
     input.value=''; form.classList.add('has-context'); input.placeholder='Reply, add details, or correct the project…';
     bubble(result.message, 'assistant', result.citations || []); chat.querySelector('.brief')?.remove(); currentBrief=null;
     if(result.brief)renderBrief(result.brief);
@@ -184,6 +191,7 @@ form.onsubmit=async event=>{
 input.maxLength=6000;
 input.addEventListener('keydown',event=>{if((event.ctrlKey || event.metaKey) && event.key==='Enter'){event.preventDefault();form.requestSubmit();}});
 async function resumeProject() {
+  if (!persistentMode) { resetProject(); return; }
   if(!projectId){resetProject();return;}
   pending=true;send.disabled=true;input.disabled=true;
   try {
@@ -195,6 +203,9 @@ async function resumeProject() {
   finally{pending=false;send.disabled=false;input.disabled=false;}
 }
 resumeProject();
+if (!persistentMode) {
+  document.querySelector('.controls span').textContent='Demo: this tab only. Refreshing resets the conversation.';
+}
 
 let printDetails = [];
 window.addEventListener('beforeprint', () => {

@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 
 import project_store
+import demo_session
 from project_workflow import build_brief, email_draft
 
 DEPARTMENT_EMAILS = {
@@ -52,7 +53,11 @@ def prepare_coordination(data: dict, remote_ip: str) -> dict:
         raise ValueError("Complete your name, email and security verification.")
     if not verify_turnstile(token, remote_ip):
         raise ValueError("Verification expired or failed. Please try again.")
-    record = project_store.load(data.get("projectId"))
+    if project_store.storage_mode()=="demo":
+        from app import OPENAI_API_KEY
+        record=demo_session.unpack(data.get("state"),OPENAI_API_KEY)
+    else:
+        record = project_store.load(data.get("projectId"))
     project = record["project"]
     brief = build_brief(project)
     if team == "Overall City coordination":

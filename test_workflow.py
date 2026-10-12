@@ -94,6 +94,7 @@ class StateAndApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.environment = patch.dict(os.environ, {"PROJECT_DB_PATH":os.path.join(self.temp.name, "projects.sqlite3"),
+                                                  "PROJECT_STORAGE_MODE":"persistent",
                                                   "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "UPSTASH_REDIS_REST_TOKEN":"",
                                                   "KV_REST_API_URL":"", "KV_REST_API_TOKEN":"", "CITY_COORDINATION_EMAIL":"city@example.com"})
         self.environment.start()
@@ -173,7 +174,7 @@ class StateAndApiTests(unittest.TestCase):
 
 class DeploymentConfigurationTests(unittest.TestCase):
     def setUp(self):
-        self.environment=patch.dict(os.environ,{"VERCEL":"1","UPSTASH_REDIS_REST_URL":"","UPSTASH_REDIS_REST_TOKEN":"",
+        self.environment=patch.dict(os.environ,{"PROJECT_STORAGE_MODE":"persistent","VERCEL":"1","UPSTASH_REDIS_REST_URL":"","UPSTASH_REDIS_REST_TOKEN":"",
                                                "KV_REST_API_URL":"","KV_REST_API_TOKEN":""})
         self.environment.start()
 

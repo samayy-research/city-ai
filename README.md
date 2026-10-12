@@ -23,20 +23,23 @@ Open http://127.0.0.1:8000. The key stays on the Python server and is never sent
 
 ## Deploy to Vercel
 
-In the Vercel import screen, select `jax-project-advisor` as the **Root Directory**. No build command or Python dependencies are required. Configure shared project storage before deploying this version; Vercel function memory and temporary files are not durable project storage.
+In the Vercel import screen, select `jax-project-advisor` as the **Root Directory**. No build command or Python dependencies are required. The default demo mode needs no database or Redis integration.
 
 Add these Environment Variables in Vercel before deploying:
 
 - `OPENAI_API_KEY` (required)
 - `OPENAI_MODEL` (optional; defaults to `gpt-4.1-mini`)
 - `OPENAI_BASE_URL` (optional; defaults to `https://api.openai.com/v1`)
-- `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or `KV_REST_API_URL` and `KV_REST_API_TOKEN` (one matching pair required on Vercel for shared, durable project state)
+- `PROJECT_STORAGE_MODE` (optional; defaults to `demo`, with no project persistence)
+- Only for `PROJECT_STORAGE_MODE=persistent`: `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or `KV_REST_API_URL` and `KV_REST_API_TOKEN` (one matching pair required on Vercel)
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (required to enable the protected City coordination-email form)
 - `CITY_COORDINATION_EMAIL` (required to enable the protected City coordination-email form)
 
 Vercel routes `/` to the app page, serves `advisor.js` as a static asset, and exposes `/api/chat` and `/api/coordination-request`. The local Python server serves those same paths. The email workflow validates the Turnstile token and returns a short draft for review. The visitor then chooses to open their email app; no email is sent by this application.
 
-### Connect Redis and redeploy
+### Optional persistent mode: connect Redis and redeploy
+
+Skip this section for the demo. To enable saved project records, set `PROJECT_STORAGE_MODE=persistent` first.
 
 1. Install the Upstash Redis integration from Vercel Marketplace, create or select a database, and connect it to this Vercel project for Production (and Preview if needed).
 2. In Project Settings → Environment Variables, confirm that one complete REST URL/token pair is present. Use the read/write REST token, not a read-only token or the `redis://` connection string. Do not commit credentials to Git or paste them into chat.
@@ -49,16 +52,20 @@ Chat checks configuration before model calls. Missing settings return a specific
 ## What it does
 
 1. The visitor describes a project in ordinary language.
-2. The model receives the saved project record and relevant versioned guidance. It asks one useful plain-language question when an answer could change routing, and returns field updates with exact applicant quotes.
+2. The model receives the current project context and relevant versioned guidance. It asks one useful plain-language question when an answer could change routing, and returns field updates with exact applicant quotes.
 3. The server preserves scope, reported approvals, explicit uncertainty, corrections and conflicts. Silence never deletes an earlier supported detail.
 4. One authoritative action plan supplies the start-here conversations, prerequisites, applicable/unresolved/excluded routes, sources and department email requests.
-5. Applicants can continue adding or correcting details after seeing a plan. The updated plan replaces the previous one. Reloading the same tab restores the server-side project and recent conversation.
+5. Applicants can continue adding or correcting details after seeing a plan. The updated plan replaces the previous one. In demo mode, refreshing resets the project; persistent mode restores it in the same tab.
 
 ## Project storage
 
-Local development uses `.project-state.sqlite3` (ignored by Git). Override the location with `PROJECT_DB_PATH` if needed. Vercel uses the configured Upstash Redis REST endpoint with atomic revision checks, so concurrent requests cannot silently overwrite another update.
+The default `PROJECT_STORAGE_MODE=demo` keeps project context only in the open browser tab's memory. It does not write project records to SQLite, Redis, local storage, or session storage. Context travels in HTTPS request bodies as a signed, compressed envelope, not in URLs; signatures prevent fabricated project records from being used for email drafts. The envelope is not encrypted and expires after six hours without an update. Refreshing, closing the tab, or switching devices starts over. Natural follow-ups, research, checklists, corrections, and configured email drafting remain available while the tab stays open. Applicant-address lookups are not cached across requests in this mode.
 
-Project records expire seven days after their last update. The browser stores only a random project access reference in session storage; anyone with that reference can access that project. There is no authenticated project library or cross-device account history. Server state keeps the supported field record independently of the model's recent-message window, plus the last 200 dialogue turns. Email contact information is used to prepare the draft and is not added to the project record. Production authentication and a retention policy still require product decisions.
+This describes application storage, not a guarantee of zero retention by the AI provider or hosting platform. Messages still go to the configured provider; its retention policy and hosting logs need separate review. Enabling demo mode does not delete previously saved records.
+
+Optional `PROJECT_STORAGE_MODE=persistent` uses `.project-state.sqlite3` locally (ignored by Git). Override the location with `PROJECT_DB_PATH` if needed. On Vercel it uses the configured Upstash Redis REST endpoint with atomic revision checks, so concurrent requests cannot silently overwrite another update.
+
+In persistent mode, project records expire seven days after their last update. The browser stores only a random project access reference in session storage; anyone with that reference can access that project. There is no authenticated project library or cross-device account history. Server state keeps the supported field record independently of the model's recent-message window, plus the last 200 dialogue turns. Email contact information is used to prepare the draft and is not added to the project record. Production authentication and a retention policy still require product decisions.
 
 ## Live research and conversational advice
 
@@ -79,7 +86,7 @@ Sources were checked on October 12, 2026. These rules are an engineering draft, 
 ## Validation
 
 ```powershell
-python -m unittest -v test_workflow test_research test_browser
+python -m unittest -v test_demo test_workflow test_research test_browser
 ```
 
 The workflow scenarios cover use conversion, unresolved use, specialty work without interior construction, parking restriping, FDOT right-of-way, conflicting/corrected scope, durable state, stale writes, department email purpose and local endpoint parity. The optional headless Chromium test exercises the actual browser flow, email preview, correction, restore and mobile width. Set `BROWSER_EXECUTABLE` to an installed Chromium/Edge executable if the Windows Edge default is not available. Model and Turnstile responses are mocked; these checks do not certify model extraction accuracy, real provider integration or City routing.

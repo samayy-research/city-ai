@@ -114,7 +114,7 @@ def street_parts(address: str):
     return match[1], name.upper()
 
 
-def lookup_property(address: str) -> dict:
+def lookup_property(address: str, use_cache: bool=True) -> dict:
     parts = street_parts(address)
     if not parts: return {"status": "needs_address", "query": address}
     def lookup():
@@ -157,7 +157,7 @@ def lookup_property(address: str) -> dict:
                 "records":records, "match_score":round(best,3), "checked_at":checked_at(),
                 "limitation":"Tax-roll building/parcel use does not establish the suite's existing permitted occupancy, zoning permission or current tenant use."}
     try:
-        return cached("property:"+address.upper(), lookup)
+        return cached("property:"+address.upper(), lookup) if use_cache else lookup()
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return {"status":"unavailable", "query":address, "checked_at":checked_at()}
 
@@ -213,7 +213,7 @@ def source_record(key: str) -> dict:
         return {"id":key, "title":title, "url":url, "status":"unavailable"}
 
 
-def research_context(project: dict, statement: str) -> dict:
+def research_context(project: dict, statement: str, cache_property: bool=True) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     location = project["fields"]["location"]["value"]
     scope = " ".join([statement, *[field["value"] for field in project["fields"].values()] ]).casefold()
@@ -228,7 +228,7 @@ def research_context(project: dict, statement: str) -> dict:
     previous = project.get("research", {}).get("property", {})
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {key:executor.submit(source_record,key) for key in keys}
-        property_future = executor.submit(lookup_property,location) if location != "unknown" else None
+        property_future = executor.submit(lookup_property,location,cache_property) if location != "unknown" else None
         sources = [future.result() for future in futures.values()]
         property_result = property_future.result() if property_future else previous or {"status":"needs_address"}
     return {"sources":sources, "property":property_result, "fees":[fee for source in sources for fee in source.get("fees", [])]}

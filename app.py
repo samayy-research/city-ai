@@ -16,6 +16,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from project_workflow import RULES, empty_project, upgrade_project, update_project, routing_facts, build_brief
 import project_store
+import demo_session
 from city_research import research_context
 
 
@@ -64,13 +65,15 @@ class ConfigurationError(RuntimeError):
 def deployment_readiness() -> dict:
     """Expose configuration presence only; never expose credentials or database URLs."""
     try:
+        mode = project_store.storage_mode()
         project_store.validate_configuration()
         storage_ready = True
     except project_store.StorageError:
         storage_ready = False
+        mode = "invalid"
     return {"ready":bool(OPENAI_API_KEY) and storage_ready,
             "checks":{"model_configured":bool(OPENAI_API_KEY), "storage_configured":storage_ready},
-            "version":"20261012-deployment-check1"}
+            "mode":mode, "version":"20261012-demo1"}
 
 
 def add_security_headers(handler: BaseHTTPRequestHandler) -> None:
@@ -201,7 +204,7 @@ Return ONLY JSON:
   "fee_id":"one id from the fetched fee records, or empty"
 }
 """
-ASSET_VERSION = "20261012-research1"
+ASSET_VERSION = "20261012-demo1"
 
 HTML = r'''<!doctype html>
 <html lang="en">
@@ -243,7 +246,8 @@ def page_html() -> str:
             + escape(TURNSTILE_SITE_KEY, quote=True)
             + '";</script><script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>'
         )
-    return HTML.replace("__ASSET_VERSION__", ASSET_VERSION).replace("</head>", turnstile + "</head>")
+    mode_script='<script>window.PROJECT_STORAGE_MODE='+json.dumps(project_store.storage_mode())+';</script>'
+    return HTML.replace("__ASSET_VERSION__", ASSET_VERSION).replace("</head>",mode_script+turnstile+"</head>")
 
 
 def complete_json(messages: list[dict]) -> dict:
@@ -289,7 +293,7 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     ])
     statement = history[-1]["text"]
     project = update_project(project, extraction.get("updates"), statement)
-    context = research_context(project, statement)
+    context = research_context(project, statement, cache_property=project_store.storage_mode()=="persistent")
     project["research"] = {
         "property":context["property"],
         "sources":[{key:value for key,value in source.items() if key not in {"excerpt","fees"}} for source in context["sources"]],
@@ -330,10 +334,13 @@ def chat_request(data: dict) -> dict:
     if not OPENAI_API_KEY:
         raise ConfigurationError("The advisor's AI service is not configured for this deployment. The app owner needs to finish the server configuration and redeploy.")
     identifier = data.get("projectId")
-    record = project_store.load(identifier) if identifier else {"project": empty_project(), "history": [], "result": None}
+    demo=project_store.storage_mode()=="demo"
+    initial={"project":empty_project(),"history":[],"result":None}
+    record = (demo_session.unpack(data["state"],OPENAI_API_KEY) if data.get("state") else initial) if demo else (project_store.load(identifier) if identifier else initial)
     record["project"] = upgrade_project(record["project"])
     expected_revision = record["project"]["revision"] if identifier else -1
     if data.get("resume") is True:
+        if demo:raise ValueError("Demo conversations are only available in the current tab. Start a new project after refreshing.")
         if not identifier or not record.get("result"):
             raise ValueError("There is no saved conversation to resume.")
         return {**record["result"], "projectId": identifier, "history": record["history"]}
@@ -343,10 +350,12 @@ def chat_request(data: dict) -> dict:
     # Client-supplied flags, plans and chat history never override the server record.
     history = [*record["history"], {"role": "user", "text": message.strip()}]
     result = openai_chat(history, record["project"])
-    identifier = identifier or project_store.new_id()
     record = {"project": result["project"], "history": [*history, {"role": "model", "text": result["message"], "citations":result.get("citations", [])}][-200:], "result": result}
+    if demo:
+        return {**result,"mode":"demo","state":demo_session.pack(record,OPENAI_API_KEY)}
+    identifier = identifier or project_store.new_id()
     project_store.save(identifier, record, expected_revision)
-    return {**result, "projectId": identifier}
+    return {**result,"mode":"persistent", "projectId": identifier}
 
 
 class Handler(BaseHTTPRequestHandler):

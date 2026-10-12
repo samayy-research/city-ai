@@ -121,10 +121,15 @@ window.addEventListener('load',async()=>{
     check(document.querySelector('.brief').textContent.includes('new driveway'),'Correction must update scope');
     check(document.querySelector('.brief').textContent.includes('Updated project details'),'Show correction history');
     check(document.documentElement.scrollWidth <= window.innerWidth+1,'Mobile layout overflow');
-    document.querySelector('#chat').textContent='';
-    await resumeProject();
-    check(document.querySelectorAll('.bubble.user').length===3,'Resume saved conversation');
-    check(document.querySelector('.brief').textContent.includes('new driveway'),'Resume saved plan');
+    if (persistentMode) {
+      document.querySelector('#chat').textContent='';
+      await resumeProject();
+      check(document.querySelectorAll('.bubble.user').length===3,'Resume saved conversation');
+      check(document.querySelector('.brief').textContent.includes('new driveway'),'Resume saved plan');
+    } else {
+      check(!sessionStorage.getItem('jax-project-id'),'Demo must not store a project reference');
+      check(demoState.length > 0,'Demo must preserve context only in memory');
+    }
     resetProject();
     check(!sessionStorage.getItem('jax-project-id'),'Restart must clear the browser project reference');
     check(!document.querySelector('.brief'),'Restart clears prior plan');
@@ -165,7 +170,10 @@ class BrowserTests(unittest.TestCase):
     def test_desktop_checklist_layout(self):
         self.run_flow(1440,1100)
 
-    def run_flow(self,width,height):
+    def test_demo_chat_and_email_without_storage(self):
+        self.run_flow(390,844,'demo')
+
+    def run_flow(self,width,height,mode='persistent'):
         class Handler(app.Handler):
             def log_message(self,*args):pass
             def do_GET(self):
@@ -180,7 +188,7 @@ class BrowserTests(unittest.TestCase):
                     self.end_headers();self.wfile.write(body)
                 else:super().do_GET()
         with tempfile.TemporaryDirectory() as temporary:
-            environment={"PROJECT_DB_PATH":str(Path(temporary)/'projects.sqlite3'), "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "UPSTASH_REDIS_REST_TOKEN":"", "KV_REST_API_URL":"", "KV_REST_API_TOKEN":""}
+            environment={"PROJECT_STORAGE_MODE":mode,"PROJECT_DB_PATH":str(Path(temporary)/'projects.sqlite3'), "VERCEL":"", "UPSTASH_REDIS_REST_URL":"", "UPSTASH_REDIS_REST_TOKEN":"", "KV_REST_API_URL":"", "KV_REST_API_TOKEN":""}
             with patch.dict(os.environ,environment), patch.object(app,'OPENAI_API_KEY','test'), patch.object(app,'TURNSTILE_SITE_KEY',''), patch.object(app,'openai_chat',side_effect=fake_model), patch.object(coordination,'verify_turnstile',return_value=True):
                 server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
                 thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

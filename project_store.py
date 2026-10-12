@@ -21,6 +21,18 @@ class StorageError(RuntimeError):
         self.code = code
 
 
+def storage_mode() -> str:
+    mode=os.environ.get("PROJECT_STORAGE_MODE","demo").strip().lower()
+    if mode not in {"demo","persistent"}:
+        raise StorageError("The project storage mode is not configured correctly.","storage_mode_invalid")
+    return mode
+
+
+def require_persistence() -> None:
+    if storage_mode() != "persistent":
+        raise StorageError("Project storage is disabled in demo mode.","storage_disabled")
+
+
 def redis_credentials() -> tuple[str,str]:
     # Never mix a URL from one configured store with a token from another.
     url, token = os.environ.get("UPSTASH_REDIS_REST_URL", ""), os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
@@ -30,7 +42,7 @@ def redis_credentials() -> tuple[str,str]:
 
 
 def validate_configuration() -> None:
-    if use_redis():
+    if storage_mode() == "persistent" and use_redis():
         url, token = redis_credentials()
         if not url.startswith("https://") or not token:
             raise StorageError("Saved-project storage is not configured for this deployment. The app owner needs to connect its shared database and redeploy.", "storage_not_configured")
@@ -71,6 +83,7 @@ def use_redis() -> bool:
 
 @contextmanager
 def connection():
+    require_persistence()
     db_path = os.environ.get("PROJECT_DB_PATH") or str(Path(__file__).with_name(".project-state.sqlite3"))
     conn = sqlite3.connect(db_path, timeout=10)
     try:
@@ -84,6 +97,7 @@ def connection():
 
 
 def load(identifier: str) -> dict:
+    require_persistence()
     identifier = project_id(identifier)
     if use_redis():
         raw = redis_command(["GET", "jax:project:" + identifier])
@@ -97,6 +111,7 @@ def load(identifier: str) -> dict:
 
 
 def save(identifier: str, record: dict, expected_revision: int = -1) -> None:
+    require_persistence()
     identifier = project_id(identifier)
     raw = json.dumps(record)
     if use_redis():
