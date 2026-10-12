@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from http.server import BaseHTTPRequestHandler
 
 from app import MAX_REQUEST_BYTES, ProviderError, add_security_headers, openai_chat
+
+
+logger = logging.getLogger(__name__)
 
 
 class handler(BaseHTTPRequestHandler):
@@ -39,6 +43,7 @@ class handler(BaseHTTPRequestHandler):
         except ProviderError as exc:
             self.send_json(502, {"error": str(exc)})
         except Exception:
+            logger.exception("Unexpected error while processing /api/chat")
             self.send_json(500, {"error": "Unexpected server error."})
 
     def do_OPTIONS(self):

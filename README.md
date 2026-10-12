@@ -16,6 +16,9 @@ $env:OPENAI_BASE_URL = "https://your-provider.example/v1"
 python app.py
 ```
 
+Alternatively, place these values in an uncommitted `jax-project-advisor/.env` file;
+the local server loads it automatically and does not override values already set in PowerShell.
+
 Open http://127.0.0.1:8000. The key stays on the Python server and is never sent to the browser.
 
 ## Deploy to Vercel
