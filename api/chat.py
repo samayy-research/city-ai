@@ -6,7 +6,7 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler
 
-from app import MAX_REQUEST_BYTES, ProviderError, add_security_headers, openai_chat
+from app import MAX_REQUEST_BYTES, ProviderError, add_security_headers, chat_request
 
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,7 @@ class handler(BaseHTTPRequestHandler):
             if not 2 <= size <= MAX_REQUEST_BYTES:
                 raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(size).decode("utf-8"))
-            history = data.get("history")
-            if not isinstance(history, list) or not history:
-                raise ValueError("A project description is required")
-            self.send_json(200, openai_chat(history))
+            self.send_json(200, chat_request(data))
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except ProviderError as exc:
