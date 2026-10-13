@@ -21,6 +21,7 @@ PAO = "https://paopropertysearch.coj.net"
 CITY = "https://www.jacksonville.gov"
 PAGES = {
     "fees": ("City fee schedule", CITY + "/departments/finance/city-fees"),
+    "historic": ("Historic Preservation — search by address", CITY + "/departments/planning-department/community-planning-division/historic-preservation-section/search-by-address"),
     "cou": ("COU and converting-use guidance", CITY + "/departments/public-works/building-inspection-division/certificates-of-use-and-converting-use-building-permits"),
     "bid": ("Building Inspection / current code edition", CITY + "/departments/public-works/building-inspection-division"),
     "forms": ("Current BID forms and checklists", CITY + "/departments/public-works/building-inspection-division/checklists,-forms-and-documents"),
@@ -221,7 +222,7 @@ def research_context(project: dict, statement: str, cache_property: bool=True) -
     if any(word in scope for word in ("restaurant", "warehouse", "office", "design", "architect", "contractor")):
         keys.append("professionals")
     if any(word in scope for word in ("mobility", "restaurant", "traffic")): keys.append("mobility")
-    if any(word in scope for word in ("site", "parking", "driveway", "drainage")): keys.extend(["site", "ldpm"])
+    if any(word in scope for word in ("site", "parking", "driveway", "drainage", "historic", "exterior", "facade", "façade", "window", "roof", "fence", "sign")): keys.extend(["site", "ldpm", "historic"])
     if any(word in scope for word in ("form", "checklist", "document", "submission")): keys.append("forms")
     # Bound retrieval and run independent public reads concurrently.
     keys = list(dict.fromkeys(keys))[:8]
@@ -234,7 +235,7 @@ def research_context(project: dict, statement: str, cache_property: bool=True) -
     return {"sources":sources, "property":property_result, "fees":[fee for source in sources for fee in source.get("fees", [])]}
 
 
-def compose_response(result: dict, context: dict) -> tuple[str,list[dict]]:
+def compose_response(result: dict, context: dict, disclosed_fee_ids: tuple[str, ...] = (), allow_repeated_fee: bool = False) -> tuple[str,list[dict],str]:
     message, question = result.get("message"), result.get("question", "")
     if not isinstance(message,str) or not message.strip() or not isinstance(question,str) or not isinstance(result.get("ready_for_brief"),bool):
         raise ValueError("The advisor returned an invalid reply. Please retry.")
@@ -254,11 +255,13 @@ def compose_response(result: dict, context: dict) -> tuple[str,list[dict]]:
     citations = [available[key] for key in source_ids if isinstance(key,str) and key in available] if isinstance(source_ids,list) else []
     fee = next((row for row in context["fees"] if row["id"] == result.get("fee_id")),None)
     parts = [message.strip()[:1300]]
-    if fee:
+    disclosed = ""
+    if fee and (fee["id"] not in disclosed_fee_ids or allow_repeated_fee):
         parts.append("The City fee schedule lists " + fee["amount"] + " for " + fee["label"] + (", " + fee["basis"] if fee.get("basis") else "") + ". " + fee["qualification"])
         if "fees" in available and not any(source["id"] == "fees" for source in citations): citations.append(available["fees"])
+        disclosed = fee["id"]
     if question.strip(): parts.append(question.strip()[:450])
-    return "\n\n".join(parts), citations
+    return "\n\n".join(parts), citations, disclosed
 
 
 if __name__ == "__main__":

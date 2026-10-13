@@ -28,18 +28,28 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(changed[0]['amount'],'$120.00')
 
     def test_server_inserts_verified_fee_with_source_and_one_question(self):
-        message,citations=research.compose_response({"message":"A new restaurant may need a COU.","question":"Are you converting an office suite?",
+        message,citations,disclosed=research.compose_response({"message":"A new restaurant may need a COU.","question":"Are you converting an office suite?",
                                                    "ready_for_brief":False,"fee_id":"cou-new","source_ids":[]},self.context())
         self.assertIn('$112.00',message)
         self.assertEqual(message.count('?'),1)
         self.assertEqual(citations[0]['id'],'fees')
+        self.assertEqual(disclosed,'cou-new')
+
+    def test_fee_is_not_repeated_without_a_direct_fee_question(self):
+        result={"message":"The use still needs confirmation.","question":"What will change in the suite?", "ready_for_brief":False,"fee_id":"cou-new","source_ids":[]}
+        message,_,disclosed=research.compose_response(result,self.context(),('cou-new',))
+        self.assertNotIn('$112.00',message)
+        self.assertEqual(disclosed,'')
+        message,_,disclosed=research.compose_response(result,self.context(),('cou-new',),True)
+        self.assertIn('$112.00',message)
+        self.assertEqual(disclosed,'cou-new')
 
     def test_unverified_model_price_is_rejected(self):
         with self.assertRaises(ValueError):
             research.compose_response({"message":"Your total is $999.","ready_for_brief":True},self.context())
 
     def test_unavailable_or_unknown_fee_cannot_be_quoted(self):
-        message,citations=research.compose_response({"message":"The review needs confirmation.","question":"What work is proposed?", "ready_for_brief":False,"fee_id":"invented","source_ids":["invented"]},
+        message,citations,_=research.compose_response({"message":"The review needs confirmation.","question":"What work is proposed?", "ready_for_brief":False,"fee_id":"invented","source_ids":["invented"]},
                                                    {"sources":[],"property":{},"fees":[]})
         self.assertNotIn('$',message);self.assertFalse(citations)
 

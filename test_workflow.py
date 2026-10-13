@@ -24,6 +24,23 @@ def project(values):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_address_policy_follows_a_project_description(self):
+        record=project({"project_description":"convert an office to a restaurant"})
+        result=app.apply_question_policy({"message":"I can help.","question":"What work is planned?","ready_for_brief":False},record)
+        self.assertEqual(result["question_field"],"location")
+        self.assertIn("address",result["question"].lower())
+
+    def test_historic_scope_policy_asks_about_exterior_work(self):
+        record=project({"project_description":"renovate a historic district storefront", "location":"123 Main St", "historic_review":"yes"})
+        result=app.apply_question_policy({"message":"I can help.","question":"What work is planned?","ready_for_brief":False},record)
+        self.assertEqual(result["question_field"],"exterior_work")
+        self.assertIn("outside",result["question"].lower())
+
+    def test_historic_route_is_omitted_for_reported_interior_only_work(self):
+        record=project({"historic_review":"yes", "exterior_work":"no"})
+        steps={step["id"]:step for step in build_brief(record)["action_plan"]}
+        self.assertEqual(steps["historic"]["status"],"not_applicable")
+
     def test_use_conversion_preserves_scope_and_orders_use_before_building(self):
         record = project({"existing_use": "office", "proposed_use": "restaurant", "project_description": "convert an office to a restaurant",
                           "business_use": "yes", "interior_work": "yes", "plumbing": "yes", "specialty_work": "commercial cooking"})
@@ -163,7 +180,8 @@ class StateAndApiTests(unittest.TestCase):
             result=app.openai_chat([{"role":"user","text":"convert office to restaurant"}],empty_project())
         self.assertEqual(result["facts"]["business_use"],"yes")
         self.assertEqual(result["facts"]["occupancy_change"],"unknown")
-        self.assertEqual(result["stage"],"final")
+        self.assertEqual(result["stage"],"follow_up")
+        self.assertEqual(result["question_field"],"location")
 
     def test_use_change_flags_mobility_even_without_site_work(self):
         brief=build_brief(project({"business_use":"yes","site_work":"no","proposed_use":"restaurant"}))

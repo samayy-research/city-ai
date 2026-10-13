@@ -10,19 +10,20 @@ RULES = RULE_BASE["rules"]
 FACT_KEYS = tuple(rule["field"] for rule in RULES)
 DETAIL_KEYS = ("existing_use", "proposed_use", "location", "alterations", "site_changes",
                "specialty_work", "existing_approvals", "project_description", "site_activity", "right_of_way_authority",
-               "floor_area", "cooking_method", "construction_budget", "project_type")
+               "floor_area", "cooking_method", "construction_budget", "project_type", "exterior_work")
 FACT_VALUES = {"yes", "no", "not_sure", "unknown"}
 
 
 def empty_project() -> dict:
     return {"fields": {key: {"value": "unknown", "evidence": []} for key in (*DETAIL_KEYS, *FACT_KEYS)},
-            "corrections": [], "conflicts": {}, "revision": 0}
+            "corrections": [], "conflicts": {}, "disclosed_fee_ids": [], "revision": 0}
 
 
 def upgrade_project(previous: dict) -> dict:
     record = empty_project()
     record.update(copy.deepcopy(previous))
     record["fields"] = {**empty_project()["fields"], **record["fields"]}
+    record["disclosed_fee_ids"] = [value for value in record.get("disclosed_fee_ids", []) if isinstance(value, str)]
     return record
 
 
@@ -92,6 +93,9 @@ def build_brief(project: dict) -> dict:
     # This is coordination order. It does not assert final COU issuance precedes building/fire approval.
     for rule in RULES:
         value = facts[rule["field"]]
+        # Historic review begins only after the visitor or an official lookup identifies a historic context.
+        if rule["id"] == "historic" and value == "unknown":
+            continue
         status = "applicable" if value == "yes" else "not_applicable" if value == "no" else "unresolved"
         exception_note = ""
         site_activity = project["fields"]["site_activity"]["value"]
@@ -102,6 +106,9 @@ def build_brief(project: dict) -> dict:
         if rule["id"] == "row" and authority in {"fdot", "private", "jea"}:
             status = "unresolved" if value != "no" else "not_applicable"
             exception_note = "A City ROW permit is not established for this jurisdiction. Development Services should identify the appropriate agency."
+        if rule["id"] == "historic" and project["fields"]["exterior_work"]["value"] == "no":
+            status = "not_applicable"
+            exception_note = "The reported work is interior-only. Confirm with Historic Preservation if the scope changes to include exterior or site work."
         prerequisites = ["use"] if rule["id"] in {"occupancy", "building", "plumbing"} and facts["business_use"] != "no" else []
         title = rule["title"]
         if status == "unresolved":
