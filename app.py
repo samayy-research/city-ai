@@ -15,7 +15,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from project_workflow import RULES, empty_project, upgrade_project, update_project, routing_facts, build_brief
+from project_workflow import RULES, empty_project, upgrade_project, update_project, routing_facts, build_brief, intake_progress
 import project_store
 import demo_session
 from city_research import research_context
@@ -197,6 +197,10 @@ Do not select a fee already listed in disclosed_fee_ids unless the visitor direc
 Set ready_for_brief true when enough scope is known for a useful preliminary plan, even if specific
 City confirmation remains. Set it false only when asking your one useful question. Respect explicit
 uncertainty; do not endlessly re-ask a question the visitor cannot answer. Clarify any saved conflict.
+Before wrapping up, clarify unreported interior/plumbing work, equipment or specialty work, and
+site/parking/access changes that could change the checklist. Ask about observable work, never ask
+the applicant to determine technical occupancy or permit classifications. Previously asked fields
+are listed in intake_asked_fields; if an answer remains unknown, carry it into City confirmation.
 Address/parcel remains optional and sensitive personal details must not be requested.
 
 Return ONLY JSON:
@@ -210,7 +214,7 @@ Return ONLY JSON:
   "fee_id":"one id from the fetched fee records, or empty"
 }
 """
-ASSET_VERSION = "20261012-demo1"
+ASSET_VERSION = "20261020-header1"
 
 HTML = r'''<!doctype html>
 <html lang="en">
@@ -222,13 +226,37 @@ HTML = r'''<!doctype html>
 </head>
 <body>
 <main class="wrap">
-  <header>
-    <div class="eyebrow">CITY OF JACKSONVILLE · PROJECT READINESS</div>
-    <h1>Jax Project Advisor</h1>
-    <p>Tell us what you are planning. We’ll help you prepare a focused conversation with the City before you submit.</p>
+  <header class="app-header">
+    <div class="brand-identity">
+      <img class="brand-mark" src="/jacksonville-seal.png?v=__ASSET_VERSION__" width="56" height="56" alt="City of Jacksonville, Florida seal">
+      <div><div class="eyebrow">JACKSONVILLE · PROJECT READINESS</div><h1>Jax Project Advisor</h1></div>
+    </div>
+    <p class="app-intro">Tell us about your project to understand which permits and reviews may apply. Answer focused questions, track your progress in the project sidebar, and generate a preliminary checklist of next steps to confirm with the City.</p>
   </header>
   <div class="notice">This is preliminary project-readiness guidance, not a City determination. Final requirements are confirmed by City staff.</div>
+  <div class="mobile-switch" role="group" aria-label="Workspace view">
+    <button type="button" data-view="chat" aria-pressed="true" aria-controls="conversation-panel">Chat</button>
+    <button type="button" data-view="plan" aria-pressed="false" aria-controls="project-panel">Project plan <span id="mobile-progress">0 topics covered</span></button>
+  </div>
+  <div class="workspace" data-view="chat">
+  <aside class="project-panel" id="project-panel" aria-label="Project progress and developing checklist">
+    <div class="panel-heading"><div><div class="eyebrow">YOUR WORKSPACE</div><h2>Project overview</h2></div><button type="button" id="restart" class="text-button">Start over</button></div>
+    <p class="panel-summary" id="panel-summary">A little context. A clearer path forward.</p>
+    <div class="progress-heading"><span>Intake progress</span><span id="progress-label" role="status">0 of 6 topics covered</span></div>
+    <progress id="intake-progress" max="6" value="0" aria-label="Intake topics covered"></progress>
+    <p class="progress-note">Tracks our conversation, not permit approval.</p>
+    <p class="intake-state" id="intake-state" role="status"></p>
+    <ol class="topic-list" id="topic-list"></ol>
+    <section class="developing-plan" aria-labelledby="developing-heading"><div class="section-heading"><h3 id="developing-heading">Developing checklist</h3><span class="live-label">Live</span></div>
+      <p class="plan-caption">Preliminary actions, refined as you share details.</p><div id="live-checklist"></div>
+    </section>
+    <p id="plan-update" class="plan-update" role="status"></p>
+  </aside>
+  <section class="conversation-panel" id="conversation-panel" aria-label="Chat with your project advisor">
+  <div class="conversation-heading"><div><span class="eyebrow">LET’S WORK THROUGH IT</span><h2>Your project advisor</h2></div><span class="session-label">One question at a time</span></div>
+  <div class="chat-scroll" id="chat-scroll">
   <section class="chat" id="chat" aria-live="polite" aria-label="Project conversation"></section>
+  </div>
   <form class="composer" id="form">
     <label class="sr-only" for="message">Describe your project or reply to the advisor</label>
     <textarea id="message" required placeholder="Tell me what you are planning…"></textarea>
@@ -237,6 +265,8 @@ HTML = r'''<!doctype html>
       <button id="send" type="submit">Send</button>
     </div>
   </form>
+  </section>
+  </div>
 </main>
 <script src="/advisor.js?v=__ASSET_VERSION__" defer></script>
 </body>
@@ -316,6 +346,9 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     if "$" in str(result.get("message", "")) or "$" in str(result.get("question", "")):
         result = complete_json([*messages, {"role":"system", "content":"Your answer included dollar figures. Return the same JSON contract without ANY prices in message/question; select only a supported fee_id."}])
     result = apply_question_policy(result, project)
+    question_field = result.get("question_field", "")
+    if result.get("ready_for_brief") is not True and question_field in project["fields"]:
+        project["intake_asked_fields"] = list(dict.fromkeys([*project.get("intake_asked_fields", []), question_field]))
     from city_research import compose_response
     fee_question = bool(re.search(r"\b(fee|fees|cost|price|how much|amount)\b", statement, re.I))
     message, citations, disclosed_fee = compose_response(
@@ -345,18 +378,57 @@ def known(project: dict, field: str) -> bool:
 def apply_question_policy(result: dict, project: dict) -> dict:
     """Enforce high-value intake questions that must not depend on model discretion."""
     result = dict(result)
+    asked = project.get("intake_asked_fields", [])
+    def unasked(field):
+        return project["fields"][field]["value"] == "unknown" and field not in asked
+    if project.get("conflicts"):
+        field, conflict = next(iter(project["conflicts"].items()))
+        result.update({"ready_for_brief": False, "question_field": field,
+                       "question_reason": "Clarify the current scope before completing your plan.",
+                       "message": "Let’s clarify one detail so your plan reflects the current scope.",
+                       "question": 'You mentioned "' + conflict["evidence"] + '"; does that replace the earlier description?'})
+        return result
     has_scope = any(known(project, field) for field in ("project_description", "proposed_use", "existing_use", "project_type"))
-    if has_scope and not known(project, "location"):
+    if has_scope and unasked("location"):
         result.update({"ready_for_brief": False, "question_field": "location",
                        "question_reason": "Location enables more precise zoning and historic-review screening.",
                        "question": "What is the project address, parcel number, or nearest intersection? That lets me check zoning and historic-review context more precisely."})
         return result
     historic_words = " ".join(str(project.get("fields", {}).get(field, {}).get("value", "")) for field in ("project_description", "alterations", "site_changes", "specialty_work")).casefold()
     historic_context = project.get("fields", {}).get("historic_review", {}).get("value") == "yes" or "historic" in historic_words
-    if historic_context and not known(project, "exterior_work"):
+    if historic_context and unasked("exterior_work"):
         result.update({"ready_for_brief": False, "question_field": "exterior_work",
                        "question_reason": "Exterior or site work can change the historic-preservation review path.",
                        "question": "Will the work change anything outside or on the site, such as windows, facade, roof, signs, fencing, driveway, or landscaping?"})
+        return result
+    if has_scope and result.get("ready_for_brief") is True:
+        questions = [
+            ("interior_work", "Will you change anything inside the space, such as walls, layout or finishes?", "Interior changes can affect the building review route."),
+            ("plumbing", "Will you add, move or replace any sinks, restrooms or other plumbing?", "Plumbing changes can add a trade review to your checklist."),
+            ("specialized_review", "Will you install or change any cooking equipment, ventilation, electrical, heating or fire-safety systems?", "Equipment and system changes can affect trade or specialty review, even without other construction."),
+            ("site_work", "Will anything change outside, such as parking, signs, landscaping or drainage?", "Exterior and parking changes can affect site review."),
+            ("right_of_way", "Will the project change a driveway, sidewalk or connection to the street?", "Access changes can require confirmation of right-of-way jurisdiction and review."),
+        ]
+        for field, question, reason in questions:
+            if unasked(field):
+                result.update({"ready_for_brief": False, "question_field": field,
+                               "question_reason": reason, "question": question,
+                               "message": "Before I wrap up your preliminary plan, let’s confirm one detail that could change your checklist."})
+                return result
+    return result
+
+
+def workspace_result(result: dict) -> dict:
+    """Use the same rule-derived plan in the live sidebar and final report."""
+    result = dict(result)
+    project = result["project"]
+    field = result.get("question_field", "") if result.get("stage") != "final" else ""
+    reason = result.get("question_reason", "") if field else ""
+    if project.get("conflicts"):
+        field = next(iter(project["conflicts"]))
+        reason = "Clarify the current scope so your plan reflects the right details."
+    result["progress"] = intake_progress(project, field, reason, plan_ready=result.get("stage") == "final")
+    result["live_plan"] = result.get("brief") or build_brief(project)
     return result
 
 
@@ -377,13 +449,13 @@ def chat_request(data: dict) -> dict:
         if demo:raise ValueError("Demo conversations are only available in the current tab. Start a new project after refreshing.")
         if not identifier or not record.get("result"):
             raise ValueError("There is no saved conversation to resume.")
-        return {**record["result"], "projectId": identifier, "history": record["history"]}
+        return {**workspace_result(record["result"]), "projectId": identifier, "history": record["history"]}
     message = data.get("message")
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_TURN_CHARS:
         raise ValueError("Share a project description or reply of up to 6,000 characters.")
     # Client-supplied flags, plans and chat history never override the server record.
     history = [*record["history"], {"role": "user", "text": message.strip()}]
-    result = openai_chat(history, record["project"])
+    result = workspace_result(openai_chat(history, record["project"]))
     record = {"project": result["project"], "history": [*history, {"role": "model", "text": result["message"], "citations":result.get("citations", [])}][-200:], "result": result}
     if demo:
         return {**result,"mode":"demo","state":demo_session.pack(record,OPENAI_API_KEY)}
@@ -409,11 +481,12 @@ class Handler(BaseHTTPRequestHandler):
             readiness=deployment_readiness()
             self.send_json(200 if readiness["ready"] else 503, readiness)
             return
-        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css")}
+        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css"),
+                  "/jacksonville-seal.png": ("jacksonville-seal.png", "image/png")}
         if path in assets:
             filename, content_type = assets[path]
             body = Path(__file__).with_name(filename).read_bytes()
-            self.send_response(200); self.send_header("Content-Type", content_type + "; charset=utf-8")
+            self.send_response(200); self.send_header("Content-Type", content_type + ("; charset=utf-8" if content_type.startswith("text/") else ""))
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Content-Length", str(len(body))); add_security_headers(self)
             self.end_headers(); self.wfile.write(body)

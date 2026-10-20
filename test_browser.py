@@ -93,9 +93,16 @@ window.addEventListener('load',async()=>{
     await composer.onsubmit({preventDefault(){}});
     check(document.querySelectorAll('.bubble.assistant').length===2,'Follow-up must be one message');
     check(!document.querySelector('.brief'),'First turn should ask a question');
+    check(document.querySelector('.topic.active strong').textContent==='Building & plumbing','Highlight the current question topic');
+    check(document.querySelectorAll('.live-step').length > 0,'Build the sidebar before the final brief');
+    check(document.querySelector('#progress-label').textContent.startsWith('2 of'),'Count supported topics');
     reply.value='Interior alterations, with no site work.';
     await composer.onsubmit({preventDefault(){}});
     check(document.querySelectorAll('.brief').length===1,'One plan should appear');
+    check(document.querySelector('.open-topics').textContent.includes('Still to confirm'),'Explain incomplete topics alongside the preliminary report');
+    check(document.querySelectorAll('.topic.deferred').length > 0,'Unfinished topics become explicit City confirmations');
+    check(!document.querySelector('.topic.pending'),'A ready plan should not leave unexplained pending topics');
+    check(document.querySelector('#intake-state').textContent.includes('still to confirm'),'Explain why a plan is ready with incomplete coverage');
     check(document.querySelector('.brief').textContent.includes('office'),'Preserve scope in summary');
     check(getComputedStyle(composer).position==='relative','Composer should not cover the chat');
     const rows=[...document.querySelectorAll('.project-checklist > li')];
@@ -120,20 +127,42 @@ window.addEventListener('load',async()=>{
     check(document.querySelectorAll('.brief').length===1,'Correction must replace the plan');
     check(document.querySelector('.brief').textContent.includes('new driveway'),'Correction must update scope');
     check(document.querySelector('.brief').textContent.includes('Updated project details'),'Show correction history');
+    check(document.querySelector('#live-checklist').textContent.includes('new driveway'),'Sidebar follows corrections');
+    const originalView=workspace.dataset.view;
+    document.querySelector('.mobile-switch [data-view="plan"]').click();
+    check(workspace.dataset.view==='plan','Switch to the mobile plan');
+    check(document.querySelector('.mobile-switch [data-view="plan"]').getAttribute('aria-pressed')==='true','Expose the selected view accessibly');
+    check(document.documentElement.scrollWidth <= window.innerWidth+1,'Plan layout overflow');
+    setView(originalView);
     check(document.documentElement.scrollWidth <= window.innerWidth+1,'Mobile layout overflow');
     if (persistentMode) {
       document.querySelector('#chat').textContent='';
       await resumeProject();
       check(document.querySelectorAll('.bubble.user').length===3,'Resume saved conversation');
       check(document.querySelector('.brief').textContent.includes('new driveway'),'Resume saved plan');
+      check(document.querySelector('#live-checklist').textContent.includes('new driveway'),'Resume live checklist');
     } else {
       check(!sessionStorage.getItem('jax-project-id'),'Demo must not store a project reference');
       check(demoState.length > 0,'Demo must preserve context only in memory');
     }
+    const savedFetch=window.fetch, savedSidebar=document.querySelector('#live-checklist').textContent;
+    const savedCoverage=document.querySelector('#intake-progress').value;
+    window.fetch=async()=>{throw Error('Test connection interruption');};
+    try {
+      reply.value='Please keep this reply for a retry.';
+      await composer.onsubmit({preventDefault(){}});
+      check(reply.value==='Please keep this reply for a retry.','Failed requests preserve the reply');
+      check(document.querySelector('#live-checklist').textContent===savedSidebar,'Failed requests preserve the supported plan');
+      check(document.querySelector('#intake-progress').value===savedCoverage,'Failed requests preserve coverage');
+      check(!document.querySelector('#send').disabled,'Failed requests allow retry');
+    } finally {window.fetch=savedFetch;}
     resetProject();
     check(!sessionStorage.getItem('jax-project-id'),'Restart must clear the browser project reference');
     check(!document.querySelector('.brief'),'Restart clears prior plan');
+    check(document.querySelectorAll('.live-step').length===0,'Restart clears live checklist');
+    check(document.querySelector('#intake-progress').value===0,'Restart clears topic coverage');
     currentProject=window.__preview.project;
+    renderWorkspace(window.__preview);
     renderBrief(window.__preview.brief);
     document.querySelector('.brief').scrollIntoView();
     document.body.dataset.browserTest='passed';
@@ -158,8 +187,9 @@ def fake_model(history, project):
         ready=True
     updates={key:{"value":value,"evidence":message,"correction":message.startswith("Actually")} for key,value in values.items()}
     updated=update_project(project,updates,message)
-    return {"stage":"final" if ready else "follow_up", "message":answer, "project":updated,
-            "facts":routing_facts(updated), "brief":build_brief(updated) if ready else None}
+    return app.workspace_result({"stage":"final" if ready else "follow_up", "message":answer, "project":updated,
+            "question_field":"interior_work" if not ready else "", "question_reason":"The proposed work helps identify the building review route." if not ready else "",
+            "facts":routing_facts(updated), "brief":build_brief(updated) if ready else None})
 
 
 @unittest.skipUnless(Path(BROWSER).exists(), "Set BROWSER_EXECUTABLE to a Chromium browser to run the UI smoke test.")
@@ -220,6 +250,9 @@ class BrowserTests(unittest.TestCase):
                             client.evaluate("window.scrollTo({top:document.querySelector('.project-checklist').getBoundingClientRect().top+window.scrollY-90,behavior:'instant'})")
                             screenshot=client.call('Page.captureScreenshot',{'format':'png'})
                             (target/f'checklist-{width}.png').write_bytes(base64.b64decode(screenshot['data']))
+                            client.evaluate("setView('plan')")
+                            screenshot=client.call('Page.captureScreenshot',{'format':'png'})
+                            (target/f'project-plan-{width}.png').write_bytes(base64.b64decode(screenshot['data']))
                     finally:
                         if client:client.close()
                         browser.terminate();browser.wait(timeout=10)

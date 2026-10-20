@@ -15,7 +15,7 @@ from unittest.mock import patch
 import app
 import coordination
 import project_store
-from project_workflow import build_brief, email_draft, empty_project, update_project
+from project_workflow import build_brief, email_draft, empty_project, update_project, intake_progress
 
 
 def project(values):
@@ -188,6 +188,72 @@ class StateAndApiTests(unittest.TestCase):
         mobility=next(step for step in brief["action_plan"] if step["id"]=='mobility')
         self.assertEqual(mobility["status"],"unresolved")
         self.assertIn('not the actual mobility fee',mobility["exceptions"])
+
+
+class IntakeProgressTests(unittest.TestCase):
+    def test_plan_waits_for_unreported_work_even_when_model_is_ready(self):
+        record = project({"project_description":"restaurant replacing an office with no planned alterations", "location":"701 San Marco", "interior_work":"no", "cooking_method":"warmed packaged food"})
+        result = app.apply_question_policy({"ready_for_brief":True, "message":"Your plan is ready."}, record)
+        self.assertFalse(result["ready_for_brief"])
+        self.assertEqual(result["question_field"], "plumbing")
+        self.assertIn("plumbing", result["question"])
+        self.assertNotIn("plan is ready", result["message"])
+
+    def test_policy_does_not_repeat_asked_fields_or_explicit_uncertainty(self):
+        record = project({"project_description":"restaurant", "location":"not_sure", "interior_work":"no", "plumbing":"not_sure", "specialized_review":"no", "site_work":"no"})
+        record["intake_asked_fields"] = ["right_of_way"]
+        result = app.apply_question_policy({"ready_for_brief":True}, record)
+        self.assertTrue(result["ready_for_brief"])
+
+    def test_unknown_site_scope_gets_a_plain_language_followup(self):
+        record = project({"project_description":"restaurant", "location":"701 San Marco", "interior_work":"no", "plumbing":"no", "specialized_review":"no"})
+        result = app.apply_question_policy({"ready_for_brief":True}, record)
+        self.assertEqual(result["question_field"], "site_work")
+        self.assertIn("parking", result["question"])
+
+    def test_final_report_explains_incomplete_topics_without_inflating_coverage(self):
+        record = project({"project_description":"restaurant", "location":"701 San Marco", "business_use":"yes", "existing_use":"office", "proposed_use":"restaurant", "interior_work":"no", "specialty_work":"no kitchen"})
+        result = app.workspace_result({"stage":"final", "project":record, "brief":build_brief(record)})
+        self.assertEqual(result["progress"]["covered"], 3)
+        open_topics = [topic for topic in result["progress"]["topics"] if topic["status"] == "deferred"]
+        self.assertEqual({topic["id"] for topic in open_topics}, {"building", "specialty", "site"})
+        self.assertTrue(all(topic["reason"] for topic in open_topics))
+
+    def test_provider_followup_is_remembered_and_not_asked_again(self):
+        record = project({"project_description":"restaurant", "location":"701 San Marco", "interior_work":"no"})
+        with patch.object(app, "OPENAI_API_KEY", "test"), patch.object(app, "complete_json", side_effect=[{"updates":{}}, {"ready_for_brief":True, "message":"Your plan is ready.", "source_ids":[]}]), patch.object(app, "research_context", return_value={"sources":[], "fees":[], "property":{"status":"needs_address"}}):
+            result = app.openai_chat([{"role":"user", "text":"Please continue."}], record)
+        self.assertEqual(result["stage"], "follow_up")
+        self.assertIsNone(result["brief"])
+        self.assertIn("plumbing", result["project"]["intake_asked_fields"])
+        followup = app.apply_question_policy({"ready_for_brief":True}, result["project"])
+        self.assertEqual(followup["question_field"], "specialized_review")
+
+    def test_coverage_requires_decisions_and_never_infers_fire_from_cooking(self):
+        record = project({"project_description":"restaurant conversion", "business_use":"yes", "proposed_use":"restaurant", "cooking_method":"gas"})
+        progress = intake_progress(record, "specialized_review", "Clarify the actual work.")
+        topics = {topic["id"]: topic for topic in progress["topics"]}
+        self.assertEqual(topics["use"]["status"], "partial")
+        self.assertEqual(topics["specialty"]["status"], "active")
+        self.assertEqual(progress["covered"], 1)
+        self.assertNotIn("historic", topics)
+
+    def test_uncertainty_conflicts_and_corrections_update_coverage(self):
+        record = project({"site_work":"no", "right_of_way":"no", "specialized_review":"not_sure"})
+        topics = {topic["id"]: topic for topic in intake_progress(record)["topics"]}
+        self.assertEqual(topics["site"]["status"], "excluded")
+        self.assertEqual(topics["specialty"]["status"], "uncertain")
+        conflicted = update_project(record, {"site_work":{"value":"yes", "evidence":"new driveway"}}, "new driveway")
+        self.assertEqual(next(topic for topic in intake_progress(conflicted)["topics"] if topic["id"] == "site")["status"], "uncertain")
+        fixed = update_project(conflicted, {"site_work":{"value":"yes", "evidence":"Actually a new driveway", "correction":True}}, "Actually a new driveway")
+        self.assertEqual(next(topic for topic in intake_progress(fixed)["topics"] if topic["id"] == "site")["status"], "covered")
+
+    def test_followup_has_live_plan_but_no_final_report(self):
+        record = project({"business_use":"yes", "existing_use":"office", "proposed_use":"restaurant"})
+        result = app.workspace_result({"stage":"follow_up", "project":record, "brief":None, "question_field":"location"})
+        self.assertIsNone(result["brief"])
+        self.assertEqual(result["live_plan"], build_brief(record))
+        self.assertEqual(next(topic for topic in result["progress"]["topics"] if topic["id"] == "location")["status"], "active")
 
 
 class DeploymentConfigurationTests(unittest.TestCase):

@@ -68,6 +68,53 @@ def routing_facts(project: dict) -> dict:
     return {key: "not_sure" if key in project["conflicts"] else project["fields"][key]["value"] for key in FACT_KEYS}
 
 
+def intake_progress(project: dict, question_field: str = "", question_reason: str = "", plan_ready: bool = False) -> dict:
+    """Describe evidence-backed topic coverage, independently of permit approval."""
+    definitions = [
+        ("project", "Your project", ("project_description", "project_type"), (), False),
+        ("location", "Project location", ("location",), (), False),
+        ("use", "Existing & proposed use", ("business_use", "existing_use", "proposed_use", "existing_approvals"), ("business_use",), False),
+        ("building", "Building & plumbing", ("interior_work", "plumbing", "occupancy_change", "alterations", "floor_area", "construction_budget"), ("interior_work", "plumbing", "occupancy_change"), False),
+        ("specialty", "Fire & specialty work", ("specialized_review", "specialty_work", "cooking_method"), ("specialized_review",), False),
+        ("site", "Site & parking", ("site_work", "right_of_way", "site_changes", "site_activity", "right_of_way_authority"), ("site_work", "right_of_way"), False),
+        ("historic", "Historic preservation", ("historic_review", "exterior_work"), ("historic_review",), True),
+    ]
+    topics = []
+    fields = project["fields"]
+    conflicts = project.get("conflicts", {})
+    for identifier, title, keys, decisions, optional in definitions:
+        values = [fields[key]["value"] for key in keys]
+        if optional and fields["historic_review"]["value"] == "unknown" and question_field not in keys:
+            continue
+        active = question_field in keys
+        uncertain = any(key in conflicts or fields[key]["value"] == "not_sure" for key in keys)
+        if decisions:
+            covered = all(fields[key]["value"] in {"yes", "no"} for key in decisions)
+            if identifier == "use" and fields["business_use"]["value"] == "yes":
+                covered = covered and all(fields[key]["value"] not in {"unknown", "not_sure", ""} for key in ("existing_use", "proposed_use"))
+            excluded = all(fields[key]["value"] == "no" for key in decisions)
+        else:
+            covered = any(value not in {"unknown", "not_sure", ""} for value in values)
+            excluded = False
+        status = "active" if active else "uncertain" if uncertain else "excluded" if excluded else "covered" if covered else "partial" if any(value != "unknown" for value in values) else "pending"
+        reason = question_reason if active else ""
+        if plan_ready and status in {"partial", "pending", "uncertain"}:
+            status = "deferred"
+            explanations = {
+                "project": "The project scope still needs confirmation.",
+                "location": "Location has not been established; address-specific checks remain open.",
+                "use": "Existing use, proposed use or use eligibility still needs confirmation.",
+                "building": "Unresolved building, plumbing or occupancy details remain in the preliminary plan for City confirmation.",
+                "specialty": "Equipment, trade or fire-review applicability has not been established.",
+                "site": "Site, parking or street-access scope still needs confirmation.",
+                "historic": "Historic status or exterior-work requirements still need confirmation.",
+            }
+            reason = explanations[identifier]
+        topics.append({"id": identifier, "title": title, "status": status,
+                       "reason": reason})
+    return {"topics": topics, "covered": sum(topic["status"] in {"covered", "excluded"} for topic in topics), "total": len(topics)}
+
+
 def project_summary(project: dict) -> str:
     fields = project["fields"]
     get = lambda key: fields[key]["value"] if fields[key]["value"] != "unknown" else ""

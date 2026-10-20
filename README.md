@@ -57,6 +57,12 @@ Chat checks configuration before model calls. Missing settings return a specific
 4. One authoritative action plan supplies the start-here conversations, prerequisites, applicable/unresolved/excluded routes, sources and department email requests.
 5. Applicants can continue adding or correcting details after seeing a plan. The updated plan replaces the previous one. In demo mode, refreshing resets the project; persistent mode restores it in the same tab.
 
+## Conversation workspace
+
+Desktop uses a project sidebar beside an independently scrolling conversation, with the composer always visible. Mobile offers Chat and Project plan views. After each successful answer, the sidebar updates topic coverage, highlights the current question and shows an expandable developing checklist from the same rule-derived plan used by the final report. Corrections update existing actions; failed requests preserve the last supported plan and the unsent reply.
+
+Coverage describes collected intake details, not permit approval or a fixed question count. Before accepting a model's ready plan, the server asks about unreported interior/plumbing work, equipment or specialty work, site changes and street access, one question at a time. Known answers and explicit uncertainty are respected; previously asked fields are recorded so an unanswered question does not loop. Technical occupancy determinations stay with City staff. A preliminary report can still be ready with unresolved topics: the sidebar labels them “To confirm with City” and the report explains them in “Still to confirm,” without inflating progress. Optional historic review appears when relevant, and unknown scope is never counted as excluded. Persistent sessions restore the sidebar; starting over clears it. Print output keeps the final report and omits the workspace controls.
+
 ## Project storage
 
 The default `PROJECT_STORAGE_MODE=demo` keeps project context only in the open browser tab's memory. It does not write project records to SQLite, Redis, local storage, or session storage. Context travels in HTTPS request bodies as a signed, compressed envelope, not in URLs; signatures prevent fabricated project records from being used for email drafts. The envelope is not encrypted and expires after six hours without an update. Refreshing, closing the tab, or switching devices starts over. Natural follow-ups, research, checklists, corrections, and configured email drafting remain available while the tab stays open. Applicant-address lookups are not cached across requests in this mode.

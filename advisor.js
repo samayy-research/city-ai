@@ -8,7 +8,76 @@ let demoState = '';
 if (!persistentMode) sessionStorage.removeItem('jax-project-id');
 let currentBrief = null;
 let currentProject = null;
+let currentProgress = null;
 let pending = false;
+let previousSteps = new Map();
+const workspace = document.querySelector('.workspace');
+const topicLabels = ['Your project', 'Project location', 'Existing & proposed use', 'Building & plumbing', 'Fire & specialty work', 'Site & parking'];
+const statusLabels = {covered:'Covered', excluded:'Not relevant to reported scope', active:'Discussing now', uncertain:'Needs clarification', partial:'Details started', pending:'Not yet covered', deferred:'To confirm with City'};
+
+function setView(view) {
+  workspace.dataset.view = view;
+  document.querySelectorAll('.mobile-switch button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+  });
+}
+document.querySelectorAll('.mobile-switch button').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
+document.querySelector('#restart').addEventListener('click', resetProject);
+
+function renderWorkspace(result = {}) {
+  const progress = result.progress || {covered:0, total:6, topics:topicLabels.map((title, index) => ({id:String(index), title, status:'pending'}))};
+  currentProgress = progress;
+  const deferred = progress.topics.filter(topic => topic.status === 'deferred');
+  document.querySelector('#intake-state').textContent = result.stage === 'final' ? (deferred.length ? `Preliminary plan ready · ${deferred.length} ${deferred.length === 1 ? 'topic' : 'topics'} still to confirm` : 'Preliminary plan ready') : '';
+  const label = `${progress.covered} of ${progress.total} topics covered`;
+  document.querySelector('#progress-label').textContent = label;
+  document.querySelector('#mobile-progress').textContent = `${progress.covered}/${progress.total} covered`;
+  const meter = document.querySelector('#intake-progress');
+  meter.max = progress.total; meter.value = progress.covered; meter.setAttribute('aria-valuetext', label);
+  const topics = document.querySelector('#topic-list'); topics.replaceChildren();
+  progress.topics.forEach(topic => {
+    const row = node('li', '', 'topic ' + topic.status);
+    if (topic.status === 'active') row.setAttribute('aria-current', 'step');
+    const marker = node('span', topic.status === 'covered' ? '✓' : topic.status === 'excluded' ? '−' : ['uncertain', 'deferred'].includes(topic.status) ? '?' : '', 'topic-marker');
+    marker.setAttribute('aria-hidden', 'true');
+    const copy = node('div'); copy.append(node('strong', topic.title), node('span', statusLabels[topic.status], 'topic-status'));
+    if (topic.reason) copy.append(node('p', topic.reason, 'topic-reason'));
+    row.append(marker, copy); topics.append(row);
+  });
+  const fields = currentProject?.fields;
+  const location = fields?.location?.value;
+  const description = fields?.project_description?.value;
+  document.querySelector('#panel-summary').textContent = [description, location].filter(value => value && value !== 'unknown' && value !== 'not_sure').join(' · ') || 'A little context. A clearer path forward.';
+  const list = document.querySelector('#live-checklist');
+  const openIds = new Set([...list.querySelectorAll('details[open]')].map(detail => detail.dataset.step));
+  list.replaceChildren();
+  const steps = (result.live_plan?.action_plan || []).filter(step => step.status !== 'not_applicable' && (step.evidence.length || result.stage === 'final'));
+  const nextSteps = new Map();
+  let changed = 0;
+  steps.forEach(step => {
+    const fingerprint = JSON.stringify([step.status, step.evidence, step.exception_note, step.prerequisites, step.fees]);
+    nextSteps.set(step.id, fingerprint);
+    const updated = previousSteps.has(step.id) && previousSteps.get(step.id) !== fingerprint;
+    const added = previousSteps.size > 0 && !previousSteps.has(step.id);
+    if (updated || added) changed++;
+    const detail = node('details', '', 'live-step' + (updated || added ? ' changed' : ''));
+    detail.dataset.step = step.id; detail.open = openIds.has(step.id);
+    const summary = node('summary'); summary.append(node('span', step.title.replace(/^Resolve whether to confirm /, 'Confirm ')));
+    const meta = node('span', '', 'live-step-meta');
+    meta.append(node('span', step.status === 'unresolved' ? 'Needs confirmation' : 'Preliminary route', 'live-step-status'));
+    if (updated || added) meta.append(node('span', updated ? 'Updated' : 'Added', 'update-tag'));
+    summary.append(meta); detail.append(summary, node('p', step.department, 'live-department'));
+    detail.append(node('p', step.request));
+    if (step.evidence.length) detail.append(node('p', 'You shared: ' + step.evidence.join(' / ')));
+    if (step.exception_note) detail.append(node('p', step.exception_note));
+    if (step.prerequisites.length) detail.append(node('p', 'First: ' + step.prerequisites.map(id => result.live_plan.action_plan.find(item => item.id === id)?.title || id).join('; ')));
+    detail.append(link(step.source_title, step.source_url)); list.append(detail);
+  });
+  if (!steps.length) list.append(node('p', result.live_plan ? 'No active actions flagged by the scope shared so far. Unresolved topics may still change your plan.' : 'Your first details will start shaping the checklist here.', 'empty-plan'));
+  const removed = [...previousSteps.keys()].filter(id => !nextSteps.has(id)).length;
+  document.querySelector('#plan-update').textContent = result.stage === 'final' && deferred.length ? 'Your plan includes open questions for City confirmation. Add details in chat to refine it.' : changed || removed ? 'Checklist updated to reflect your latest details.' : result.stage === 'final' ? 'Your preliminary plan is ready. You can still add or correct details.' : '';
+  previousSteps = nextSteps;
+}
 
 function node(tag, text, className) {
   const el = document.createElement(tag);
@@ -45,6 +114,16 @@ function renderBrief(brief) {
   currentBrief = brief;
   const article = node('article', '', 'brief');
   article.append(node('h2', 'Your preliminary coordination plan'), node('p', brief.project_summary, 'project-summary'));
+  const openTopics = currentProgress?.topics.filter(topic => topic.status === 'deferred') || [];
+  if (openTopics.length) {
+    const section = node('section', '', 'open-topics');
+    section.append(node('h3', 'Still to confirm'), node('p', 'This preliminary plan uses the details you shared. These topics remain open; add details in chat or confirm them with City staff.'));
+    const list = node('ul');
+    openTopics.forEach(topic => {
+      const item = node('li'); item.append(node('strong', topic.title + ': '), document.createTextNode(topic.reason)); list.append(item);
+    });
+    section.append(list); article.append(section);
+  }
   const steps = brief.action_plan.filter(step => step.status !== 'not_applicable');
   const ready = steps.filter(step => step.prerequisites.length === 0);
   article.append(node('h3', ready.length > 1 ? 'Conversations you can start now' : 'Start here'));
@@ -166,6 +245,7 @@ function coordinationForm(container, brief) {
 function resetProject() {
   if(pending)return;
   projectId=''; demoState=''; currentProject=null; currentBrief=null;
+  previousSteps = new Map(); renderWorkspace(); setView('chat');
   if (persistentMode) sessionStorage.removeItem('jax-project-id');
   chat.textContent=''; form.classList.remove('has-context'); input.value=''; input.placeholder='Tell me what you are planning…';
   bubble('Hi — tell me about the project you are considering. A simple description is enough to start.'); input.focus();
@@ -173,7 +253,10 @@ function resetProject() {
 form.onsubmit=async event=>{
   event.preventDefault(); const message=input.value.trim(); if(!message || pending)return;
   pending=true; send.disabled=true; input.disabled=true; send.textContent='Thinking…';
+  document.querySelector('#restart').disabled=true;
+  chat.setAttribute('aria-busy', 'true');
   const user=bubble(message,'user'); const loading=bubble('Thinking through your project…'); loading.classList.add('pending');
+  loading.scrollIntoView({behavior:'smooth', block:'nearest'});
   try {
     const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(persistentMode?{projectId}:{state:demoState}),message})});
     const result=await response.json(); if(!response.ok)throw Error(result.error || 'The advisor could not respond.');
@@ -181,27 +264,30 @@ form.onsubmit=async event=>{
     if (persistentMode) {projectId=result.projectId; sessionStorage.setItem('jax-project-id',projectId);}
     else demoState=result.state || '';
     currentProject=result.project;
+    renderWorkspace(result);
     input.value=''; form.classList.add('has-context'); input.placeholder='Reply, add details, or correct the project…';
     bubble(result.message, 'assistant', result.citations || []); chat.querySelector('.brief')?.remove(); currentBrief=null;
     if(result.brief)renderBrief(result.brief);
     user.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){loading.remove();user.remove();bubble(err.message + ' Your reply is still below so you can retry.','error');}
-  finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';input.focus();}
+  finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';document.querySelector('#restart').disabled=false;chat.setAttribute('aria-busy','false');input.focus({preventScroll:true});}
 };
 input.maxLength=6000;
 input.addEventListener('keydown',event=>{if((event.ctrlKey || event.metaKey) && event.key==='Enter'){event.preventDefault();form.requestSubmit();}});
 async function resumeProject() {
   if (!persistentMode) { resetProject(); return; }
   if(!projectId){resetProject();return;}
-  pending=true;send.disabled=true;input.disabled=true;
+  pending=true;send.disabled=true;input.disabled=true;document.querySelector('#restart').disabled=true;
   try {
     const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,resume:true})});
     const result=await response.json();if(!response.ok)throw Error(result.error || 'Unable to restore this project.');
     currentProject=result.project;result.history.forEach(turn=>bubble(turn.text,turn.role==='user'?'user':'assistant',turn.citations || []));
+    renderWorkspace(result);
     form.classList.add('has-context');input.placeholder='Reply, add details, or correct the project…';if(result.brief)renderBrief(result.brief);
   }catch(err){projectId='';sessionStorage.removeItem('jax-project-id');bubble(err.message,'error');}
-  finally{pending=false;send.disabled=false;input.disabled=false;}
+  finally{pending=false;send.disabled=false;input.disabled=false;document.querySelector('#restart').disabled=false;}
 }
+renderWorkspace();
 resumeProject();
 if (!persistentMode) {
   document.querySelector('.controls span').textContent='Demo: this tab only. Refreshing resets the conversation.';
