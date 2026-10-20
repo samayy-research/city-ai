@@ -214,7 +214,7 @@ Return ONLY JSON:
   "fee_id":"one id from the fetched fee records, or empty"
 }
 """
-ASSET_VERSION = "20261020-header1"
+ASSET_VERSION = "20261020-header2"
 
 HTML = r'''<!doctype html>
 <html lang="en">
@@ -228,7 +228,6 @@ HTML = r'''<!doctype html>
 <main class="wrap">
   <header class="app-header">
     <div class="brand-identity">
-      <img class="brand-mark" src="/jacksonville-seal.png?v=__ASSET_VERSION__" width="56" height="56" alt="City of Jacksonville, Florida seal">
       <div><div class="eyebrow">JACKSONVILLE · PROJECT READINESS</div><h1>Jax Project Advisor</h1></div>
     </div>
     <p class="app-intro">Tell us about your project to understand which permits and reviews may apply. Answer focused questions, track your progress in the project sidebar, and generate a preliminary checklist of next steps to confirm with the City.</p>
@@ -481,8 +480,7 @@ class Handler(BaseHTTPRequestHandler):
             readiness=deployment_readiness()
             self.send_json(200 if readiness["ready"] else 503, readiness)
             return
-        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css"),
-                  "/jacksonville-seal.png": ("jacksonville-seal.png", "image/png")}
+        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css")}
         if path in assets:
             filename, content_type = assets[path]
             body = Path(__file__).with_name(filename).read_bytes()
