@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from historic_gis import lookup_historic, SCHEMA_VERSION
 
 PAO = "https://paopropertysearch.coj.net"
 CITY = "https://www.jacksonville.gov"
@@ -227,12 +228,23 @@ def research_context(project: dict, statement: str, cache_property: bool=True) -
     # Bound retrieval and run independent public reads concurrently.
     keys = list(dict.fromkeys(keys))[:8]
     previous = project.get("research", {}).get("property", {})
+    previous_historic = project.get("research", {}).get("historic", {})
+    reuse_historic = False
+    try:
+        reuse_historic = previous_historic.get('schema_version') == SCHEMA_VERSION and previous_historic.get('query') == location and (datetime.now(timezone.utc) - datetime.fromisoformat(previous_historic['checked_at'])).total_seconds() < (3600 if previous_historic.get('local_status') != 'requires_review' else 300)
+    except (KeyError, ValueError, TypeError):
+        pass
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {key:executor.submit(source_record,key) for key in keys}
         property_future = executor.submit(lookup_property,location,cache_property) if location != "unknown" else None
+        historic_future = executor.submit(lookup_historic, location) if location not in {'unknown','not_sure',''} and not reuse_historic else None
         sources = [future.result() for future in futures.values()]
         property_result = property_future.result() if property_future else previous or {"status":"needs_address"}
-    return {"sources":sources, "property":property_result, "fees":[fee for source in sources for fee in source.get("fees", [])]}
+        historic = historic_future.result() if historic_future else previous_historic if reuse_historic else {}
+    if historic:
+        sources.append({'id':'historic-gis','title':'City historic GIS screening','url':historic['source_url'],
+                        'status':'available','excerpt':historic['reason'],'checked_at':historic['checked_at']})
+    return {"sources":sources, "property":property_result, "historic":historic, "fees":[fee for source in sources for fee in source.get("fees", [])]}
 
 
 def compose_response(result: dict, context: dict, disclosed_fee_ids: tuple[str, ...] = (), allow_repeated_fee: bool = False) -> tuple[str,list[dict],str]:

@@ -19,6 +19,7 @@ from project_workflow import RULES, empty_project, upgrade_project, update_proje
 import project_store
 import demo_session
 from city_research import research_context
+from historic_gis import current_historic, has_historic_flag
 
 
 def load_local_env() -> None:
@@ -202,6 +203,21 @@ site/parking/access changes that could change the checklist. Ask about observabl
 the applicant to determine technical occupancy or permit classifications. Previously asked fields
 are listed in intake_asked_fields; if an answer remains unknown, carry it into City confirmation.
 Address/parcel remains optional and sensitive personal details must not be requested.
+Historic designation is checked automatically in research.historic. Never ask the visitor whether
+the property is historic or in a historic district. Use local_status and the recorded evidence;
+National Register and inventory records alone do not establish local COA requirements. A missing,
+failed or ambiguous check is unresolved, never proof that a property is not historic. Ask about
+planned exterior work when a local designation is mapped. The application displays the GIS result.
+The screening checklist keeps Archaeological Sensitivity (High only), Cemeteries, National Register,
+Local Landmarks, Local Historic Districts, and Florida Master Site File structures separate.
+ANY match in these categories triggers the overall Historic review flag. Explain which category
+matched. A Historic screening flag is broader than a local historic designation or COA requirement.
+Mapped cemetery features require scope-dependent City confirmation, not an automatic COA assumption.
+Archaeological Sensitivity is a separate predictive layer, reported in research.historic.archaeology.
+Only High sensitivity triggers an archaeological flag or coordination action. Skip Medium and Low
+in chat advice and warnings; raw classifications remain in the research evidence. High sensitivity does not
+establish a confirmed archaeological site or COA requirement. Explain that City staff should confirm
+implications for planned ground disturbance. Never summarize all these categories as "not historic."
 
 Return ONLY JSON:
 {
@@ -214,7 +230,7 @@ Return ONLY JSON:
   "fee_id":"one id from the fetched fee records, or empty"
 }
 """
-ASSET_VERSION = "20261020-header2"
+ASSET_VERSION = "20261020-historic6"
 
 HTML = r'''<!doctype html>
 <html lang="en">
@@ -246,6 +262,7 @@ HTML = r'''<!doctype html>
     <p class="progress-note">Tracks our conversation, not permit approval.</p>
     <p class="intake-state" id="intake-state" role="status"></p>
     <ol class="topic-list" id="topic-list"></ol>
+    <div id="historic-result"></div>
     <section class="developing-plan" aria-labelledby="developing-heading"><div class="section-heading"><h3 id="developing-heading">Developing checklist</h3><span class="live-label">Live</span></div>
       <p class="plan-caption">Preliminary actions, refined as you share details.</p><div id="live-checklist"></div>
     </section>
@@ -331,6 +348,7 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     context = research_context(project, statement, cache_property=project_store.storage_mode()=="persistent")
     project["research"] = {
         "property":context["property"],
+        "historic":context.get("historic", {}),
         "sources":[{key:value for key,value in source.items() if key not in {"excerpt","fees"}} for source in context["sources"]],
         "fees":context["fees"],
     }
@@ -352,6 +370,23 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     fee_question = bool(re.search(r"\b(fee|fees|cost|price|how much|amount)\b", statement, re.I))
     message, citations, disclosed_fee = compose_response(
         result, context, tuple(project.get("disclosed_fee_ids", [])), fee_question)
+    finding = current_historic(project)
+    finding_key = finding.get('query','') + '|' + finding.get('local_status','') + '|' + str(has_historic_flag(finding)) + '|' + ','.join(str(row['layer']) for row in finding.get('screening_checks',[]) if row['status']=='identified')
+    if finding and project.get('historic_disclosed') != finding_key:
+        headline = {'designated':'The City map identifies a local historic designation for the matching parcel(s).',
+                    'not_identified':'The City map did not identify a local historic district or landmark in the matching parcel(s).'
+                    }.get(finding.get('local_status'), 'I could not establish the historic status reliably from the City map; City confirmation remains needed.')
+        if has_historic_flag(finding):
+            headline = 'Historic review is flagged by the City map screening. ' + headline
+        levels = [level for level in finding.get('archaeology',{}).get('levels',[]) if level.casefold() == 'high']
+        if levels:
+            headline += ' The parcel also intersects archaeological sensitivity zones: ' + ', '.join(levels) + '. This predictive classification is separate from historic designation; City staff should confirm implications for any ground disturbance.'
+        if any(row['layer']==41 and row['status']=='identified' for row in finding.get('screening_checks',[])):
+            headline += ' The parcel also intersects a mapped cemetery feature; confirm its relevance to the proposed work with City staff.'
+        message = headline + '\n\n' + message
+        if not any(source['id']=='historic-gis' for source in citations):
+            citations.append({'id':'historic-gis','title':'City historic GIS screening','url':finding['source_url']})
+        project['historic_disclosed'] = finding_key
     if disclosed_fee and disclosed_fee not in project["disclosed_fee_ids"]:
         project["disclosed_fee_ids"].append(disclosed_fee)
     ready_for_brief = result.get("ready_for_brief") is True
@@ -394,7 +429,11 @@ def apply_question_policy(result: dict, project: dict) -> dict:
                        "question": "What is the project address, parcel number, or nearest intersection? That lets me check zoning and historic-review context more precisely."})
         return result
     historic_words = " ".join(str(project.get("fields", {}).get(field, {}).get("value", "")) for field in ("project_description", "alterations", "site_changes", "specialty_work")).casefold()
-    historic_context = project.get("fields", {}).get("historic_review", {}).get("value") == "yes" or "historic" in historic_words
+    finding = current_historic(project)
+    historic_context = finding.get('local_status') == 'designated' or project.get("fields", {}).get("historic_review", {}).get("value") == "yes" or (not finding and "historic" in historic_words)
+    if result.get('question_field') == 'historic_review':
+        result.update({'ready_for_brief':True, 'question_field':'', 'question_reason':'', 'question':'',
+                       'message':'Historic designation is checked against the City map; any unresolved status stays in your plan for City confirmation.'})
     if historic_context and unasked("exterior_work"):
         result.update({"ready_for_brief": False, "question_field": "exterior_work",
                        "question_reason": "Exterior or site work can change the historic-preservation review path.",

@@ -158,12 +158,22 @@ progress::-webkit-progress-bar { background: #dce3d9; border-radius: 99px; }
 progress::-webkit-progress-value { background: var(--blue); border-radius: 99px; transition: width .3s ease; }
 progress::-moz-progress-bar { background: var(--blue); border-radius: 99px; }
 .progress-note { margin: 0; font-size: .65rem; color: var(--muted); }
+.historic-card { margin: 16px 0; padding: 13px; border: 1px solid #d4dfcf; border-radius: 10px; background: #fafcf7; overflow-wrap: anywhere; }
+.historic-card h3 { margin: 0 0 7px; font-size: .8rem; }
+.historic-card strong { display: block; font-size: .78rem; }
+.historic-card p, .historic-card a { font-size: .7rem; line-height: 1.6; margin: 8px 0; }
+.historic-screening-list { list-style: none; padding: 0; margin: 10px 0; }
+.historic-screening-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .7rem; }
+.historic-screening-list li strong { flex: 0 0 auto; font-size: .65rem; color: var(--muted); }
+.historic-screening-list .screening-identified strong { color: #846321; }
 .intake-state:empty { display: none; }
 .intake-state { margin: 12px 0 0; padding: 10px; border-radius: 8px; background: #fff8e7; color: #765c28; font-size: .72rem; line-height: 1.5; }
 .topic-list { list-style: none; padding: 0; margin: 19px 0 25px; }
 .topic { display: flex; align-items: flex-start; gap: 11px; padding: 8px 10px; margin: 2px -10px; border: 1px solid transparent; border-radius: 11px; }
 .topic-marker { display: grid; place-items: center; flex: 0 0 19px; height: 19px; margin-top: 1px; border: 1px solid #bac4b9; border-radius: 50%; font-size: .7rem; color: var(--muted); }
 .topic strong { display: block; font-size: .8rem; font-weight: 550; line-height: 1.4; }
+.topic > div { min-width: 0; flex: 1; }
+.topic .historic-card { margin: 12px 0 0; }
 .topic-status { display: block; margin-top: 2px; color: var(--muted); font-size: .68rem; line-height: 1.4; }
 .topic.active { background: #fff; border-color: #dce4d7; box-shadow: 0 2px 5px #233d2b04; }
 .topic.active .topic-marker { border: 5px solid var(--blue); background: white; }

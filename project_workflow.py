@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from historic_gis import current_historic, has_historic_flag
 
 RULE_BASE = json.loads(Path(__file__).with_name("routing_rules.json").read_text(encoding="utf-8"))
 RULES = RULE_BASE["rules"]
@@ -65,7 +66,17 @@ def update_project(previous: dict, updates: object, statement: str) -> dict:
 
 
 def routing_facts(project: dict) -> dict:
-    return {key: "not_sure" if key in project["conflicts"] else project["fields"][key]["value"] for key in FACT_KEYS}
+    facts = {key: "not_sure" if key in project["conflicts"] else project["fields"][key]["value"] for key in FACT_KEYS}
+    finding = current_historic(project)
+    if finding:
+        mapped = {'designated':'yes','not_identified':'no'}.get(finding.get('local_status'), 'not_sure')
+        if has_historic_flag(finding) and finding.get('local_status') != 'designated':
+            mapped = 'not_sure'
+        if finding.get('historic_status') == 'requires_review':
+            mapped = 'not_sure'
+        reported = facts['historic_review']
+        facts['historic_review'] = 'not_sure' if 'historic_review' in project['conflicts'] or (reported in {'yes','no'} and reported != mapped) else mapped
+    return facts
 
 
 def intake_progress(project: dict, question_field: str = "", question_reason: str = "", plan_ready: bool = False) -> dict:
@@ -80,7 +91,7 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
         ("historic", "Historic preservation", ("historic_review", "exterior_work"), ("historic_review",), True),
     ]
     topics = []
-    fields = project["fields"]
+    fields = {**project["fields"], 'historic_review':{**project["fields"]['historic_review'], 'value':routing_facts(project)['historic_review']}}
     conflicts = project.get("conflicts", {})
     for identifier, title, keys, decisions, optional in definitions:
         values = [fields[key]["value"] for key in keys]
@@ -111,7 +122,8 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
             }
             reason = explanations[identifier]
         topics.append({"id": identifier, "title": title, "status": status,
-                       "reason": reason})
+                       "status_label": ('Historic review flagged' if has_historic_flag(current_historic(project)) else 'No historic screening flags identified' if status=='excluded' else '') if identifier=='historic' and current_historic(project) else '',
+                       "reason": (current_historic(project).get('reason','') + (' ' + reason if reason else '')) if identifier == 'historic' else reason})
     return {"topics": topics, "covered": sum(topic["status"] in {"covered", "excluded"} for topic in topics), "total": len(topics)}
 
 
@@ -140,6 +152,14 @@ def build_brief(project: dict) -> dict:
     # This is coordination order. It does not assert final COU issuance precedes building/fire approval.
     for rule in RULES:
         value = facts[rule["field"]]
+        finding = current_historic(project) if rule['id']=='historic' else {}
+        nonlocal_flag = bool(finding and has_historic_flag(finding) and finding.get('local_status')!='designated')
+        if nonlocal_flag:
+            rule = {**rule, 'title':'Confirm historic-resource coordination for the mapped findings',
+                    'request':'Could you confirm the relevance of the mapped historic screening findings to our proposed work and whether any coordination is needed?',
+                    'outcome':'City confirmation of scope-dependent historic-resource coordination',
+                    'guidance':'The screening flag can come from archaeology, cemeteries, National Register or historic-inventory records. Confirm relevance to the actual work with City staff.',
+                    'exceptions':'These records do not automatically establish a local historic designation or COA requirement.'}
         # Historic review begins only after the visitor or an official lookup identifies a historic context.
         if rule["id"] == "historic" and value == "unknown":
             continue
@@ -153,18 +173,40 @@ def build_brief(project: dict) -> dict:
         if rule["id"] == "row" and authority in {"fdot", "private", "jea"}:
             status = "unresolved" if value != "no" else "not_applicable"
             exception_note = "A City ROW permit is not established for this jurisdiction. Development Services should identify the appropriate agency."
-        if rule["id"] == "historic" and project["fields"]["exterior_work"]["value"] == "no":
+        if rule["id"] == "historic" and not nonlocal_flag and project["fields"]["exterior_work"]["value"] == "no":
             status = "not_applicable"
             exception_note = "The reported work is interior-only. Confirm with Historic Preservation if the scope changes to include exterior or site work."
+        finding = current_historic(project) if rule['id'] == 'historic' else {}
+        if finding:
+            if value == 'yes' and project['fields']['exterior_work']['value'] not in {'yes','no'}:
+                status = 'unresolved'
+            exception_note = (exception_note + ' ' + finding['reason']).strip()
         prerequisites = ["use"] if rule["id"] in {"occupancy", "building", "plumbing"} and facts["business_use"] != "no" else []
         title = rule["title"]
         if status == "unresolved":
             title = "Resolve whether to " + title[0].lower() + title[1:]
         steps.append({**rule, "status": status, "prerequisites": prerequisites,
                       "prerequisite_basis": "Preliminary use coordination before building submission; City COU Steps 1–2" if prerequisites else "Independent coordination; City confirms any formal dependencies",
-                      "title": title, "evidence": project["fields"][rule["field"]]["evidence"],
+                      "title": title, "evidence": ([f"City GIS checked {finding['checked_at']}: {finding['reason']}"] if finding else project["fields"][rule["field"]]["evidence"]),
                       "exception_note": exception_note,
+                      "evidence_label": 'City GIS' if finding else 'You shared',
                       "rule_version": RULE_BASE["version"]})
+    historic = current_historic(project)
+    levels = historic.get('archaeology',{}).get('levels',[])
+    if any(level.casefold() == 'high' for level in levels):
+        steps.append({'id':'archaeology','field':'site_work','status':'unresolved',
+            'title':'Confirm archaeological coordination for any ground disturbance',
+            'department':'Historic Preservation Section',
+            'request':'If this project involves ground disturbance, could you confirm whether the mapped archaeological sensitivity calls for coordination or further screening?',
+            'outcome':'City confirmation of whether the proposed ground disturbance needs archaeological coordination',
+            'prerequisites':[],'prerequisite_basis':'Scope-dependent City confirmation; no universal permit prerequisite is established.',
+            'evidence':['City GIS archaeological sensitivity: High'],'evidence_label':'City GIS',
+            'source_title':'City GIS layer information: Archaeological Sensitivity predictive model',
+            'source_url':historic['archaeology']['source_url'],
+            'guidance':'The mapped predictive sensitivity should be discussed with City staff if work will disturb soil.',
+            'exceptions':'Sensitivity does not establish a confirmed archaeological site, local historic designation or automatic COA requirement.',
+            'exception_note':'Confirm relevance to the actual work; the model can classify different portions of one parcel differently.',
+            'rule_version':RULE_BASE['version']})
     # A changed commercial use may need a mobility decision even without exterior construction.
     if facts["business_use"] in {"yes", "not_sure"}:
         steps.append({"id":"mobility", "field":"business_use", "status":"unresolved",

@@ -68,7 +68,7 @@ class ResearchTests(unittest.TestCase):
     def test_property_evidence_does_not_change_applicant_suite_use(self):
         record=update_project(empty_project(),{'location':{'value':'701 San Marco','evidence':'701 San Marco'}},'701 San Marco')
         property_result={'status':'matched','records':[{'property_use':'Office 3+ Sty'}]}
-        with patch.object(research,'lookup_property',return_value=property_result),patch.object(research,'source_record',side_effect=lambda key:{'id':key,'status':'unavailable'}):
+        with patch.object(research,'lookup_property',return_value=property_result),patch.object(research,'lookup_historic',return_value={}),patch.object(research,'source_record',side_effect=lambda key:{'id':key,'status':'unavailable'}):
             context=research.research_context(record,'restaurant')
         self.assertEqual(context['property'],property_result)
         self.assertEqual(record['fields']['existing_use']['value'],'unknown')

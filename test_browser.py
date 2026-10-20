@@ -19,6 +19,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import app
+from historic_gis import LAYERS
 import coordination
 from project_workflow import build_brief, routing_facts, update_project
 
@@ -95,10 +96,22 @@ window.addEventListener('load',async()=>{
     check(!document.querySelector('.brief'),'First turn should ask a question');
     check(document.querySelector('.topic.active strong').textContent==='Building & plumbing','Highlight the current question topic');
     check(document.querySelectorAll('.live-step').length > 0,'Build the sidebar before the final brief');
-    check(document.querySelector('#progress-label').textContent.startsWith('2 of'),'Count supported topics');
+    check(document.querySelector('#progress-label').textContent.startsWith('4 of'),'Count supported topics, including the GIS finding');
+    check(document.querySelector('#historic-result .historic-card').textContent.includes('Local historic designation identified'),'Render the automatic historic finding');
+    check(document.querySelector('#historic-result .historic-card').textContent.includes('Archaeological sensitivity: High'),'Show the High archaeological flag');
+    check(document.querySelector('#historic-result .historic-card').textContent.includes('Historic review: Flagged'),'Show the overall historic flag');
+    check(document.querySelectorAll('#historic-result .historic-screening-list li').length===6,'Show all historic screening categories');
+    check(document.querySelector('[data-topic="site"]').nextElementSibling.dataset.topic==='historic','Historic topic follows Site and parking');
+    check(document.querySelector('[data-topic="historic"] #historic-result'),'Keep historic site details under the historic topic');
+    check(!document.querySelector('#historic-result .historic-card').textContent.includes('Medium'),'Do not flag Medium sensitivity');
+    check(!document.querySelector('#historic-result .historic-card').textContent.includes('Low'),'Do not flag Low sensitivity');
+    check(document.querySelector('#historic-result a').href.startsWith('https://maps.coj.net/'),'Link to the City map');
     reply.value='Interior alterations, with no site work.';
     await composer.onsubmit({preventDefault(){}});
     check(document.querySelectorAll('.brief').length===1,'One plan should appear');
+    check(document.querySelector('.plan-step .step-heading strong').textContent==='Zoning & Certificate of Use (COU)','Use concise checklist names');
+    check([...document.querySelectorAll('.plan-step .status-pill')].every(pill=>pill.textContent==='Confirm with the City'),'Separate City confirmation from the checklist title');
+    check(document.querySelector('.historic-site-details .historic-card'),'Keep report site details with the historic checklist item');
     check(document.querySelector('.open-topics').textContent.includes('Still to confirm'),'Explain incomplete topics alongside the preliminary report');
     check(document.querySelectorAll('.topic.deferred').length > 0,'Unfinished topics become explicit City confirmations');
     check(!document.querySelector('.topic.pending'),'A ready plan should not leave unexplained pending topics');
@@ -159,6 +172,7 @@ window.addEventListener('load',async()=>{
     resetProject();
     check(!sessionStorage.getItem('jax-project-id'),'Restart must clear the browser project reference');
     check(!document.querySelector('.brief'),'Restart clears prior plan');
+    check(!document.querySelector('#historic-result .historic-card'),'Restart clears the historic finding');
     check(document.querySelectorAll('.live-step').length===0,'Restart clears live checklist');
     check(document.querySelector('#intake-progress').value===0,'Restart clears topic coverage');
     currentProject=window.__preview.project;
@@ -174,7 +188,7 @@ window.addEventListener('load',async()=>{
 def fake_model(history, project):
     message = history[-1]["text"]
     if message.startswith("I am"):
-        values={"existing_use":"office", "proposed_use":"restaurant", "project_description":"convert an office to a restaurant", "business_use":"yes"}
+        values={"existing_use":"office", "proposed_use":"restaurant", "project_description":"convert an office to a restaurant", "business_use":"yes", "location":"117 W Duval St"}
         answer="That sounds like a useful transformation. What work are you planning inside the space?"
         ready=False
     elif message.startswith("Interior"):
@@ -187,6 +201,12 @@ def fake_model(history, project):
         ready=True
     updates={key:{"value":value,"evidence":message,"correction":message.startswith("Actually")} for key,value in values.items()}
     updated=update_project(project,updates,message)
+    updated['research']={'historic':{'query':'117 W Duval St','status':'designated','local_status':'designated',
+        'reason':'The City map identifies the St. James Building local landmark. City staff confirm requirements.',
+        'checked_at':'2026-10-20T16:00:00+00:00','source_url':'https://maps.coj.net/landdevelopmentreview/',
+        'archaeology':{'levels':['High','Medium','Low'],'flagged':True,'status':'identified','source_url':'https://maps.coj.net/landdevelopmentreview/images/HELP_LayerInformation.pdf'},
+        'screening_checks':[{'layer':key,'title':name+' (High only)' if key==40 else name,'status':'identified' if key in (40,43) else 'not_identified','complete':True} for key,name in LAYERS.items()],
+        'parcels':[{'parcel':'073753 0000','checks':[{'matches':[{'LANDMARK_N':'St. James Building'}]}]}]}}
     return app.workspace_result({"stage":"final" if ready else "follow_up", "message":answer, "project":updated,
             "question_field":"interior_work" if not ready else "", "question_reason":"The proposed work helps identify the building review route." if not ready else "",
             "facts":routing_facts(updated), "brief":build_brief(updated) if ready else None})

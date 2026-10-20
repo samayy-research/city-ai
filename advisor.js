@@ -25,6 +25,8 @@ document.querySelectorAll('.mobile-switch button').forEach(button => button.addE
 document.querySelector('#restart').addEventListener('click', resetProject);
 
 function renderWorkspace(result = {}) {
+  const historicResult = document.querySelector('#historic-result');
+  const historicExpanded = historicResult.querySelector('details')?.open || false;
   const progress = result.progress || {covered:0, total:6, topics:topicLabels.map((title, index) => ({id:String(index), title, status:'pending'}))};
   currentProgress = progress;
   const deferred = progress.topics.filter(topic => topic.status === 'deferred');
@@ -37,14 +39,19 @@ function renderWorkspace(result = {}) {
   const topics = document.querySelector('#topic-list'); topics.replaceChildren();
   progress.topics.forEach(topic => {
     const row = node('li', '', 'topic ' + topic.status);
+    row.dataset.topic = topic.id;
     if (topic.status === 'active') row.setAttribute('aria-current', 'step');
     const marker = node('span', topic.status === 'covered' ? '✓' : topic.status === 'excluded' ? '−' : ['uncertain', 'deferred'].includes(topic.status) ? '?' : '', 'topic-marker');
     marker.setAttribute('aria-hidden', 'true');
-    const copy = node('div'); copy.append(node('strong', topic.title), node('span', statusLabels[topic.status], 'topic-status'));
+    const copy = node('div'); copy.append(node('strong', topic.title), node('span', topic.status_label || statusLabels[topic.status], 'topic-status'));
     if (topic.reason) copy.append(node('p', topic.reason, 'topic-reason'));
+    if (topic.id === 'historic') copy.append(historicResult);
     row.append(marker, copy); topics.append(row);
   });
+  if (!progress.topics.some(topic => topic.id === 'historic')) topics.after(historicResult);
   const fields = currentProject?.fields;
+  historicResult.replaceChildren();
+  const historic = historicCard(historicExpanded); if (historic && progress.topics.some(topic => topic.id === 'historic')) historicResult.append(historic);
   const location = fields?.location?.value;
   const description = fields?.project_description?.value;
   document.querySelector('#panel-summary').textContent = [description, location].filter(value => value && value !== 'unknown' && value !== 'not_sure').join(' · ') || 'A little context. A clearer path forward.';
@@ -62,15 +69,15 @@ function renderWorkspace(result = {}) {
     if (updated || added) changed++;
     const detail = node('details', '', 'live-step' + (updated || added ? ' changed' : ''));
     detail.dataset.step = step.id; detail.open = openIds.has(step.id);
-    const summary = node('summary'); summary.append(node('span', step.title.replace(/^Resolve whether to confirm /, 'Confirm ')));
+    const summary = node('summary'); summary.append(node('span', checklistTitle(step)));
     const meta = node('span', '', 'live-step-meta');
-    meta.append(node('span', step.status === 'unresolved' ? 'Needs confirmation' : 'Preliminary route', 'live-step-status'));
+    meta.append(node('span', 'Confirm with the City', 'live-step-status'));
     if (updated || added) meta.append(node('span', updated ? 'Updated' : 'Added', 'update-tag'));
     summary.append(meta); detail.append(summary, node('p', step.department, 'live-department'));
     detail.append(node('p', step.request));
-    if (step.evidence.length) detail.append(node('p', 'You shared: ' + step.evidence.join(' / ')));
+    if (step.evidence.length) detail.append(node('p', (step.evidence_label || 'You shared') + ': ' + step.evidence.join(' / ')));
     if (step.exception_note) detail.append(node('p', step.exception_note));
-    if (step.prerequisites.length) detail.append(node('p', 'First: ' + step.prerequisites.map(id => result.live_plan.action_plan.find(item => item.id === id)?.title || id).join('; ')));
+    if (step.prerequisites.length) detail.append(node('p', 'First: ' + step.prerequisites.map(id => checklistTitle(result.live_plan.action_plan.find(item => item.id === id) || {id,title:id})).join('; ')));
     detail.append(link(step.source_title, step.source_url)); list.append(detail);
   });
   if (!steps.length) list.append(node('p', result.live_plan ? 'No active actions flagged by the scope shared so far. Unresolved topics may still change your plan.' : 'Your first details will start shaping the checklist here.', 'empty-plan'));
@@ -96,6 +103,7 @@ function bubble(text, kind = 'assistant', citations = []) {
   return el;
 }
 function contact(group) {
+  if (group.startsWith('Historic')) return {email:'HistoricPreservation@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/community-planning-division/historic-preservation-section'};
   if (group.startsWith('Concurrency')) return {email:'CMMSO@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/transportation-planning/concurrency-and-mobility-management-system-office'};
   if (group.startsWith('Zoning')) return {email:'Zoning@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division/zoning-section'};
   if (group.startsWith('Development')) return {email:'ReviewGrp@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division'};
@@ -104,10 +112,47 @@ function contact(group) {
 function link(text, url) {
   const el = node('a', text, 'contact-source');
   // URLs are from the server rule base, never markup from the model.
-  if (url.startsWith('https://www.jacksonville.gov/') || url.startsWith('https://paopropertysearch.coj.net/Basic/Detail.aspx?RE=')) {
+  if (url.startsWith('https://www.jacksonville.gov/') || url.startsWith('https://maps.coj.net/landdevelopmentreview/') || url.startsWith('https://paopropertysearch.coj.net/Basic/Detail.aspx?RE=')) {
     el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer';
   }
   return el;
+}
+function checklistTitle(step) {
+  const titles = {use:'Zoning & Certificate of Use (COU)', occupancy:'Occupancy & converting-use review',
+    building:'Building permit', plumbing:'Plumbing permit', site:'Site development & parking',
+    row:'Right-of-way & access', specialty:'Specialty & agency review', historic:'Historic preservation',
+    archaeology:'Archaeological review', mobility:'Mobility review & fees'};
+  const title = step.title.replace(/^(?:Resolve whether to )?(?:confirm )?/i, '');
+  return titles[step.id] || title.charAt(0).toUpperCase() + title.slice(1);
+}
+function historicCard(expanded = false) {
+  const finding = currentProject?.research?.historic;
+  if (!finding || finding.query !== currentProject?.fields?.location?.value) return null;
+  const card = node('section', '', 'historic-card');
+  card.append(node('h3', 'Historic & archaeological checks'));
+  const historicFlag = finding.historic_flag || finding.local_status === 'designated' || finding.screening_checks?.some(check => check.status === 'identified') || finding.archaeology?.levels?.some(level => level.toLowerCase() === 'high');
+  card.append(node('strong', historicFlag ? 'Historic review: Flagged' : finding.historic_status === 'not_identified' ? 'Historic review: No flags identified' : 'Historic review: Check details'));
+  card.append(node('strong', {designated:'Local historic designation identified', not_identified:'No local historic designation identified'}[finding.local_status] || 'Historic status needs confirmation'));
+  const archaeology = finding.archaeology;
+  if (archaeology?.levels?.some(level => level.toLowerCase() === 'high')) card.append(node('strong', 'Archaeological sensitivity: High'));
+  else if (archaeology?.status === 'requires_review') card.append(node('strong', 'Archaeological sensitivity check incomplete'));
+  card.append(node('p', finding.reason));
+  if (finding.screening_checks?.length) {
+    const details = node('details'); details.open = expanded;
+    details.append(node('summary', 'View screening checklist'));
+    const list = node('ul', '', 'historic-screening-list');
+    finding.screening_checks.forEach(check => {
+      const row = node('li', '', 'screening-' + check.status);
+      row.append(node('span', check.title), node('strong', check.status === 'identified' ? (check.complete === false ? 'Found; partial check' : 'Found') : check.status === 'not_identified' ? 'Not identified' : 'Check incomplete'));
+      list.append(row);
+    });
+    details.append(list); card.append(details);
+  }
+  const matches = [...new Set((finding.parcels || []).flatMap(parcel => parcel.checks.flatMap(check => (check.matches || []).map(match => match.LANDMARK_N || match.RESNAME || match.SITENAME || match.NAME || '').filter(Boolean))))];
+  if (matches.length) card.append(node('p', 'Records: ' + matches.join('; ')));
+  if (finding.parcels?.length) card.append(node('p', 'Parcel(s): ' + finding.parcels.map(parcel => parcel.parcel).join(', ')));
+  card.append(node('p', 'Checked ' + new Date(finding.checked_at).toLocaleString(), 'source'), link('View the City historic map', finding.source_url));
+  return card;
 }
 function renderBrief(brief) {
   chat.querySelector('.brief')?.remove();
@@ -148,27 +193,35 @@ function renderBrief(brief) {
     const number = node('span', String(index + 1), 'step-number'); number.setAttribute('aria-hidden', 'true');
     const copy = node('div', '', 'step-copy');
     const heading = node('div', '', 'step-heading');
-    const title = step.title.replace(/^Resolve whether to confirm /, 'Confirm ');
-    heading.append(node('strong', title), node('span', step.status === 'unresolved' ? 'Needs confirmation' : 'Preliminary route', 'status-pill ' + step.status));
+    const title = checklistTitle(step);
+    const confirmation = node('span', 'Confirm with the City', 'status-pill ' + step.status);
+    confirmation.title = step.status === 'unresolved' ? 'Applicability remains unresolved; confirm with City staff.' : 'Preliminary route based on reported scope; confirm with City staff.';
+    heading.append(node('strong', title), confirmation);
     copy.append(heading, node('p', step.department, 'step-department'));
     if (step.prerequisites.length) {
-      const titles = step.prerequisites.map(id => brief.action_plan.find(s => s.id === id)?.title.replace(/^Resolve whether to confirm /, 'Confirm ') || id);
+      const titles = step.prerequisites.map(id => checklistTitle(brief.action_plan.find(s => s.id === id) || {id,title:id}));
       copy.append(node('p', 'First: ' + titles.join('; '), 'dependency'));
     }
     const details = node('details');
     details.append(node('summary', 'What to confirm and why'));
     details.append(node('p', 'Needed outcome: ' + step.outcome));
     if (step.exception_note) details.append(node('p', step.exception_note));
-    details.append(node('p', step.evidence.length ? 'You shared: ' + step.evidence.join(' / ') : 'This detail has not been established.'));
+    details.append(node('p', step.evidence.length ? (step.evidence_label || 'You shared') + ': ' + step.evidence.join(' / ') : 'This detail has not been established.'));
     details.append(node('p', step.guidance), node('p', step.exceptions), link(step.source_title, step.source_url));
     (step.fees || []).forEach(fee => details.append(node('p',fee.label + ': ' + fee.amount + '. ' + fee.qualification),link('City fee schedule',fee.source_url)));
-    copy.append(details); row.append(number, copy); checklist.append(row);
+    copy.append(details);
+    if (step.id === 'historic') {
+      const historic = historicCard(true);
+      if (historic) {const siteDetails = node('details', '', 'historic-site-details'); siteDetails.append(node('summary', 'Historic site details'), historic); copy.append(siteDetails);}
+    }
+    row.append(number, copy); checklist.append(row);
   });
   article.append(checklist);
+  if (!steps.some(step => step.id === 'historic')) {const historic = historicCard(true); if (historic) article.append(historic);}
   const omitted = brief.action_plan.filter(step => step.status === 'not_applicable');
   if (omitted.length) {
     const details = node('details'); details.append(node('summary', 'Scope reported as not included'));
-    omitted.forEach(step => details.append(node('p', step.title + ': ' + (step.exception_note || step.evidence.join(' / ')))));
+    omitted.forEach(step => details.append(node('p', checklistTitle(step) + ': ' + (step.exception_note || step.evidence.join(' / ')))));
     article.append(details);
   }
   const corrections = currentProject?.corrections || [];

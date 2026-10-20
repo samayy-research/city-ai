@@ -13,6 +13,7 @@ import demo_session
 from project_workflow import build_brief, email_draft
 
 DEPARTMENT_EMAILS = {
+    "Historic Preservation Section": "HistoricPreservation@coj.net",
     "Zoning / Certificate of Use (COU)": "Zoning@coj.net",
     "Building Inspection Division / Permit Coordinator": "BIDDocuments@coj.net",
     "Development Services (site and civil review)": "ReviewGrp@coj.net",

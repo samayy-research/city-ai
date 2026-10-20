@@ -75,6 +75,10 @@ In persistent mode, project records expire seven days after their last update. T
 
 ## Live research and conversational advice
 
+Historic screening runs automatically when a street address or real estate number is supplied. `historic_gis.py` uses the City's public Land Development Review map session and proxy, including its required Referer header, to retrieve complete parcel polygons and query local historic districts, local landmarks, National Register records and Florida Master Site File structures. Queries use POST with polygon geometry; no browser, GIS credential or additional dependency is required. The layer names are checked before using their IDs. Only the address/parcel identifiers and bounded historic attributes enter project research.
+
+The sidebar and report show the finding, parcel IDs, source and check time. Local mapped designations trigger an exterior-work question. No local intersection is described as “not identified,” rather than a definitive non-historic determination; National Register and inventory records are distinguished from local COA applicability. Multiple parcels, failed queries and unmatched addresses retain their qualifications. A lookup failure never becomes a negative finding. Applicant-reported historic facts remain separate; conflicting applicant and GIS findings stay unresolved. Changing the address invalidates the old result. Same-project findings are reused for up to an hour, with unresolved local checks retried after five minutes; demo mode does not cache addresses across projects. The production backend therefore uses direct Python queries, while `C:\city\gis-proof` remains the standalone browser proof.
+
 Each turn first updates applicant-supported scope, then retrieves relevant official City guidance and renders a concise explanation with one useful follow-up. The chat is no longer limited to acknowledgements. Sources appear as clickable links under the reply. Public reads are bounded, run concurrently and cache for an hour; unavailable sources do not supply prices.
 
 `city_research.py` searches the Duval Property Appraiser's public search form, ranks address matches (including small spelling errors), and reads the matching property-use records. It deliberately excludes owner names, mailing addresses and valuations. A parcel/tax classification is kept in `project.research`, separate from applicant-confirmed `existing_use` and occupancy. Multiple records at one address remain ambiguous. The address alone never establishes the suite use or permitted occupancy.
@@ -85,6 +89,10 @@ Retrieved references include COU/converting-use guidance, BID's current code-edi
 
 ## Routing rules and review status
 
+The displayed screening checklist covers Archaeological Sensitivity (High only), Cemeteries, National Register Historic Districts/Properties, Local Landmarks, Local Historic Districts and Florida Master Site File historic structures. **Any** matching category triggers the overall **Historic review: Flagged** status in chat, sidebar and plan, with the matched category retained. A non-local finding remains a coordination decision for City staff, rather than an automatic COA requirement. Medium and Low archaeological sensitivity do not trigger this overall flag. Failed category queries remain incomplete.
+
+The automatic GIS check also queries Archaeological Sensitivity (layer 40), a predictive model separate from local historic designation. Only a **High** intersection triggers an archaeological warning and a scope-dependent coordination item for ground disturbance. Medium, Low and Water classifications remain in raw evidence and do not trigger warnings or actions. The app reports multiple classifications as parcel intersections, never as proof the entire parcel has one classification. Sensitivity alone does not establish a confirmed archaeological site, mandatory survey, permit or COA. Lookup schema versions invalidate older same-project cached results when the screening changes.
+
 `routing_rules.json` records the version, official City sources, section descriptions, triggers and exceptions. `project_workflow.py` selects the relevant guidance and derives a shared preliminary plan. The use conversation precedes building-submission coordination where the use route is applicable or unresolved; this does not mean final COU issuance precedes building/fire approval. Independent site and specialty conversations can begin alongside use clarification. Detailed formal site-review dependencies remain questions for Development Services, rather than invented universal prerequisites.
 
 Sources were checked on October 12, 2026. These rules are an engineering draft, not a City/reviewer-approved rule base. In particular, the supplied preliminary matrix provides the plumbing screening trigger; the linked submission page does not establish a universal plumbing-permit requirement. The City source page identifies specific site and ROW exceptions. Only explicitly supported scope qualifiers activate those exceptions.
@@ -92,7 +100,7 @@ Sources were checked on October 12, 2026. These rules are an engineering draft, 
 ## Validation
 
 ```powershell
-python -m unittest -v test_demo test_workflow test_research test_browser
+python -m unittest -v test_demo test_workflow test_research test_historic test_browser
 ```
 
 The workflow scenarios cover use conversion, unresolved use, specialty work without interior construction, parking restriping, FDOT right-of-way, conflicting/corrected scope, durable state, stale writes, department email purpose and local endpoint parity. The optional headless Chromium test exercises the actual browser flow, email preview, correction, restore and mobile width. Set `BROWSER_EXECUTABLE` to an installed Chromium/Edge executable if the Windows Edge default is not available. Model and Turnstile responses are mocked; these checks do not certify model extraction accuracy, real provider integration or City routing.
