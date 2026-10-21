@@ -129,7 +129,7 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
 
 def project_summary(project: dict) -> str:
     fields = project["fields"]
-    get = lambda key: fields[key]["value"] if fields[key]["value"] != "unknown" else ""
+    get = lambda key: fields[key]["value"] if fields[key]["value"] not in {"unknown", "not_sure"} else ""
     description = get("project_description")
     if not description:
         existing, proposed = get("existing_use"), get("proposed_use")
@@ -138,6 +138,8 @@ def project_summary(project: dict) -> str:
     parts = [description]
     if get("location"):
         parts.append("Location: " + get("location") + ".")
+    elif fields["location"]["value"] == "not_sure":
+        parts.append("The project location has not yet been chosen or confirmed.")
     for key, label in (("alterations", "Proposed work"), ("site_changes", "Site scope"),
                        ("specialty_work", "Specialty scope"), ("existing_approvals", "Reported approvals")):
         value = get(key)
@@ -251,13 +253,13 @@ def build_brief(project: dict) -> dict:
 
 
 def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_email: str = "", location: str = "", note: str = "") -> dict:
-    """A short scope paragraph, relevant suggestions and one coordinator-facing request."""
+    """Explain the scope, screening basis and specific decisions for the selected team."""
     active = [step for step in brief["action_plan"] if step["status"] != "not_applicable" and
               (team == "Overall City coordination" or step["department"] == team)]
     if not active:
         raise ValueError("There are no coordination steps for this department.")
     fields = project["fields"]
-    value = lambda key: fields[key]["value"] if fields[key]["value"] != "unknown" else ""
+    value = lambda key: fields[key]["value"] if fields[key]["value"] not in {"unknown", "not_sure"} else ""
     scope = value("project_description") or value("proposed_use") or "a project whose scope is still being developed"
     # Only the relevant scope is included; no checklist or agency-wide data dump.
     detail_keys = ("site_changes",) if team.startswith("Development") else ("alterations", "specialty_work")
@@ -269,20 +271,35 @@ def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_ema
     paragraph = "My proposed project: " + compact(scope, 360) + "."
     if details:
         paragraph += " The proposed scope includes " + compact("; ".join(details), 220) + "."
-    address = location or value("location")
+    address = location if location and location not in {"unknown", "not_sure"} else value("location")
     if address:
         paragraph += " Location: " + compact(address, 180) + "."
-    suggested = [step["title"].removeprefix("Confirm ") for step in active if step["status"] == "applicable"]
-    unresolved = [step["title"].removeprefix("Resolve whether to confirm ") for step in active if step["status"] == "unresolved"]
-    suggestions = "Jax Project Advisor suggested checking " + ", ".join(suggested[:3]) + (" and other scope-dependent reviews" if len(suggested) > 3 else "") + ", subject to City confirmation." if suggested else "Jax Project Advisor identified scope decisions that need City confirmation."
-    if unresolved:
-        suggestions += " We still need confirmation of " + ", ".join(unresolved[:2]) + "."
-    # Group by department; the email has one request, rather than one request per flag.
-    request = active[0]["request"] if len(active) == 1 else (
-        "Could you confirm the appropriate permit and review path for this scope, including the unresolved items above, and the documents we should prepare before submitting?"
-        if team == "Overall City coordination" else
-        "Could you confirm the reviews your department needs for this scope and the information we should prepare before submission?")
-    paragraphs = ["Hello,", paragraph, suggestions, request]
+    else:
+        paragraph += " The location is not yet established; I am seeking scope-based guidance and understand location-specific checks remain open."
+    purpose = "I am seeking preliminary guidance from " + team + " before preparing a formal submission."
+    suggestions = "Jax Project Advisor provided the following preliminary suggestions for your review; these are not City determinations:"
+    for step in active:
+        title = step["title"].removeprefix("Resolve whether to ")
+        basis = "; ".join(step["evidence"])
+        explanation = " Based on: " + compact(basis, 240) + "." if basis else " The relevant scope has not yet been established."
+        suggestions += "\n- " + title + "." + explanation
+        if step.get("exception_note"):
+            suggestions += " " + compact(step["exception_note"], 240) + "."
+    # Each open decision gets its actual rule-derived question, without an arbitrary item limit.
+    unresolved = [step for step in active if step["status"] == "unresolved"]
+    routed = [step for step in active if step["status"] == "applicable"]
+    paragraphs = ["Hello,", purpose, paragraph, suggestions]
+    for heading, selected in (("Open questions to resolve:", unresolved),
+                              ("Please also confirm the suggested review steps:", routed)):
+        if selected:
+            questions = list(dict.fromkeys(step["request"] for step in selected))
+            paragraphs.append(heading + "\n" + "\n".join(f"{index}. {question}" for index, question in enumerate(questions, 1)))
+    others = [step for step in brief["action_plan"] if step["status"] == "applicable" and step not in active]
+    if others:
+        paragraphs.append("For context, the advisor also suggested checking: " + "; ".join(
+            step["title"].removeprefix("Confirm ") + " (" + step["department"] + ")" for step in others)
+            + ". Please identify any coordination needed with those teams.")
+    paragraphs.append("Please advise which documents, plans or additional project details your team needs to answer these questions, and the appropriate next step before submission. If a question belongs with another team, please direct me to the appropriate contact.")
     if note:
         paragraphs.append("Additional context: " + compact(note, 240))
     paragraphs.append("Thank you,\n" + (name or "[Your name]") + ("\n" + reply_email if reply_email else ""))

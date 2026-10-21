@@ -127,9 +127,13 @@ answer, acknowledge that and leave a specific City confirmation decision rather 
 asking. Set ready_for_brief false only when asking your one useful question. Never fabricate
 contacts, sources, fees, deadlines, permit requirements or dependencies. Do not give a checklist;
 the application builds the authoritative action plan. Never request sensitive personal data.
-Address or parcel is optional, but once a meaningful project description has been shared without
-one, set question_field to location and ask for an address, parcel, or nearest intersection. Explain
-that it improves zoning and historic-review screening; do not make it a condition of receiving help.
+Collect location and a meaningful project description before giving permit or fee guidance.
+Ask for the planned address first when location is missing, even if it was already asked.
+If the visitor explicitly says the address is unknown, undecided, unavailable or not yet chosen,
+save location as not_sure with their exact evidence quote. Silence or an unrelated reply is not
+uncertainty. Once location is supplied or explicitly unknown, ask for the project description if
+missing. A proposed activity such as opening a restaurant is sufficient initial scope; an existing
+use alone is not. Preserve explicit location uncertainty until the visitor supplies a location.
 
 Also preserve these explicit scope qualifiers when supported: site_activity may be
 parking_restriping_only or ada_only ONLY when the applicant says that is the entire site scope;
@@ -151,6 +155,10 @@ Return JSON:
 
 SYSTEM_PROMPT = """You are Jax Project Advisor, a warm and knowledgeable preliminary Jacksonville
 project-readiness assistant. You are independent of the City and cannot confirm or approve permits.
+
+Location and proposed project scope come before permit or fee guidance. If the saved location is
+not_sure, proceed using the project scope without re-asking the address. Explain that guidance is
+preliminary and location-specific zoning, historic and jurisdiction checks remain open.
 
 Every turn should help the visitor understand the project, not merely acknowledge and interview.
 Give 1–3 short sentences about the most relevant likely requirement or consequence of the detail
@@ -345,6 +353,17 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     ])
     statement = history[-1]["text"]
     project = update_project(project, extraction.get("updates"), statement)
+    # Stop before research, advice generation or fee composition until basic intake is complete.
+    if intake_missing(project):
+        result = apply_question_policy({}, project)
+        project["intake_asked_fields"] = list(dict.fromkeys([
+            *project.get("intake_asked_fields", []), result["question_field"]]))
+        return {
+            "stage": "follow_up", "message": result["message"] + " " + result["question"],
+            "citations": [], "facts": routing_facts(project), "project": project,
+            "question_field": result["question_field"], "question_reason": result["question_reason"],
+            "brief": None,
+        }
     context = research_context(project, statement, cache_property=project_store.storage_mode()=="persistent")
     project["research"] = {
         "property":context["property"],
@@ -409,12 +428,33 @@ def known(project: dict, field: str) -> bool:
     return isinstance(value, str) and value not in {"", "unknown", "not_sure"}
 
 
+def intake_missing(project: dict) -> str:
+    """Require a location response and proposed scope; explicit uncertainty allows help."""
+    location = project.get("fields", {}).get("location", {})
+    location_deferred = location.get("value") == "not_sure" and bool(location.get("evidence"))
+    if not known(project, "location") and not location_deferred:
+        return "location"
+    if not any(known(project, field) for field in ("project_description", "proposed_use", "project_type")):
+        return "project_description"
+    return ""
+
+
 def apply_question_policy(result: dict, project: dict) -> dict:
     """Enforce high-value intake questions that must not depend on model discretion."""
     result = dict(result)
     asked = project.get("intake_asked_fields", [])
     def unasked(field):
         return project["fields"][field]["value"] == "unknown" and field not in asked
+    missing = intake_missing(project)
+    if missing:
+        return {
+            "ready_for_brief": False, "question_field": missing,
+            "question_reason": "Location and proposed scope are needed before preparing project guidance.",
+            "message": "Let's start with the project location." if missing == "location" else "Thanks. Tell me what you are planning there.",
+            "question": "What is the planned project address? If you haven't chosen one yet, let me know."
+                        if missing == "location" else "What would you like to build, open or change?",
+            "fee_id": "", "source_ids": [],
+        }
     if project.get("conflicts"):
         field, conflict = next(iter(project["conflicts"].items()))
         result.update({"ready_for_brief": False, "question_field": field,
@@ -422,12 +462,11 @@ def apply_question_policy(result: dict, project: dict) -> dict:
                        "message": "Let’s clarify one detail so your plan reflects the current scope.",
                        "question": 'You mentioned "' + conflict["evidence"] + '"; does that replace the earlier description?'})
         return result
-    has_scope = any(known(project, field) for field in ("project_description", "proposed_use", "existing_use", "project_type"))
-    if has_scope and unasked("location"):
-        result.update({"ready_for_brief": False, "question_field": "location",
-                       "question_reason": "Location enables more precise zoning and historic-review screening.",
-                       "question": "What is the project address, parcel number, or nearest intersection? That lets me check zoning and historic-review context more precisely."})
-        return result
+    has_scope = any(known(project, field) for field in ("project_description", "proposed_use", "project_type"))
+    if project["fields"]["location"]["value"] == "not_sure" and result.get("question_field") == "location":
+        result.update({"ready_for_brief": True, "question_field": "", "question_reason": "", "question": "",
+                       "message": "We can work from your project scope. Location-specific zoning, historic and jurisdiction checks remain open.",
+                       "fee_id": "", "source_ids": []})
     historic_words = " ".join(str(project.get("fields", {}).get(field, {}).get("value", "")) for field in ("project_description", "alterations", "site_changes", "specialty_work")).casefold()
     finding = current_historic(project)
     historic_context = finding.get('local_status') == 'designated' or project.get("fields", {}).get("historic_review", {}).get("value") == "yes" or (not finding and "historic" in historic_words)
@@ -451,7 +490,7 @@ def apply_question_policy(result: dict, project: dict) -> dict:
             if unasked(field):
                 result.update({"ready_for_brief": False, "question_field": field,
                                "question_reason": reason, "question": question,
-                               "message": "Before I wrap up your preliminary plan, let’s confirm one detail that could change your checklist."})
+                               "message": reason})
                 return result
     return result
 
@@ -460,13 +499,23 @@ def workspace_result(result: dict) -> dict:
     """Use the same rule-derived plan in the live sidebar and final report."""
     result = dict(result)
     project = result["project"]
+    missing = intake_missing(project)
+    if missing:
+        result["stage"] = "follow_up"
+        result["brief"] = None
+        policy = apply_question_policy({}, project)
+        result["question_field"] = missing
+        result["question_reason"] = policy["question_reason"]
     field = result.get("question_field", "") if result.get("stage") != "final" else ""
     reason = result.get("question_reason", "") if field else ""
-    if project.get("conflicts"):
+    if project.get("conflicts") and not missing:
         field = next(iter(project["conflicts"]))
         reason = "Clarify the current scope so your plan reflects the right details."
     result["progress"] = intake_progress(project, field, reason, plan_ready=result.get("stage") == "final")
-    result["live_plan"] = result.get("brief") or build_brief(project)
+    if missing:
+        result["live_plan"] = None
+    else:
+        result["live_plan"] = result.get("brief") or build_brief(project)
     return result
 
 

@@ -243,7 +243,7 @@ function renderBrief(brief) {
 }
 function coordinationForm(container, brief) {
   const section = node('section', '', 'email-section');
-  section.append(node('h3', 'Prepare a short City email'), node('p', 'A brief project description, relevant advisor suggestions and one request for confirmation. Review the draft before opening your email app.'));
+  section.append(node('h3', 'Prepare a City email'), node('p', 'Use this draft to ask the relevant City department about open questions and what to prepare before submission. It includes your project scope, the advisor’s preliminary suggestions, and specific questions for the department you select. Review the draft, then open it in your email app to send.'));
   const emailForm = node('form', '', 'coordination-form');
   function field(title, name, type='text', required=false) {
     const label=node('label', title);
@@ -256,7 +256,7 @@ function coordinationForm(container, brief) {
   const name=field('Your name','applicantName','text',true); name.autocomplete='name';
   const email=field('Your email','applicantEmail','email',true); email.autocomplete='email';
   const address=field('Project location (optional)','projectAddress'); address.maxLength=300;
-  address.value=currentProject?.fields.location.value === 'unknown' ? '' : currentProject?.fields.location.value || '';
+  address.value=['unknown','not_sure'].includes(currentProject?.fields.location.value) ? '' : currentProject?.fields.location.value || '';
   const label=node('label','Who should review this request?'); const select=node('select');
   for(const group of brief.city_conversations) {const option=node('option',group.group); option.value=group.group; select.append(option);}
   const overall=node('option','Overall City coordination'); overall.value='Overall City coordination'; select.append(overall);
@@ -320,8 +320,14 @@ form.onsubmit=async event=>{
     renderWorkspace(result);
     input.value=''; form.classList.add('has-context'); input.placeholder='Reply, add details, or correct the project…';
     bubble(result.message, 'assistant', result.citations || []); chat.querySelector('.brief')?.remove(); currentBrief=null;
-    if(result.brief)renderBrief(result.brief);
-    user.scrollIntoView({behavior:'smooth',block:'start'});
+    if(result.brief) {
+      const completion=bubble('Thank you—I have the information needed for a preliminary checklist. ' + result.brief.project_summary + '\n\nI’ll now generate your checklist to help you identify potential reviews, required inputs, and documents or project details to prepare. The City will confirm what applies. If you have questions or need to resolve an open item, use “Prepare a City email” below to generate a draft for the relevant department. Review it, then open it in your email app to send.');
+      completion.scrollIntoView({behavior:'smooth',block:'nearest'});
+      send.textContent='Preparing checklist…';
+      await new Promise(resolve=>setTimeout(resolve,5000));
+      renderBrief(result.brief);
+      chat.querySelector('.brief').scrollIntoView({behavior:'smooth',block:'start'});
+    } else user.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){loading.remove();user.remove();bubble(err.message + ' Your reply is still below so you can retry.','error');}
   finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';document.querySelector('#restart').disabled=false;chat.setAttribute('aria-busy','false');input.focus({preventScroll:true});}
 };

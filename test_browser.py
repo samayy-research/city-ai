@@ -107,7 +107,20 @@ window.addEventListener('load',async()=>{
     check(!document.querySelector('#historic-result .historic-card').textContent.includes('Low'),'Do not flag Low sensitivity');
     check(document.querySelector('#historic-result a').href.startsWith('https://maps.coj.net/'),'Link to the City map');
     reply.value='Interior alterations, with no site work.';
-    await composer.onsubmit({preventDefault(){}});
+    const checklistStarted=performance.now();
+    const completing=composer.onsubmit({preventDefault(){}});
+    while(!document.querySelector('#send').textContent.includes('Preparing checklist')) {
+      if(performance.now()-checklistStarted>4000) throw Error('Completion announcement did not appear');
+      await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    check(chat.textContent.includes('Thank you—I have the information needed for a preliminary checklist.'),'Announce intake completion in chat');
+    check(chat.lastElementChild.textContent.includes('office'),'Summarize the project in the completion message');
+    check(chat.lastElementChild.textContent.includes('required inputs'),'Explain what to prepare using the checklist');
+    check(chat.lastElementChild.textContent.includes('Prepare a City email'),'Explain how to request City clarification');
+    check(!document.querySelector('.brief'),'Wait before showing the final checklist');
+    check(document.querySelector('#send').disabled,'Prevent duplicate requests during checklist preparation');
+    await completing;
+    check(performance.now()-checklistStarted>=5000,'Pause five seconds before showing the checklist');
     check(document.querySelectorAll('.brief').length===1,'One plan should appear');
     check(document.querySelector('.plan-step .step-heading strong').textContent==='Zoning & Certificate of Use (COU)','Use concise checklist names');
     check([...document.querySelectorAll('.plan-step .status-pill')].every(pill=>pill.textContent==='Confirm with the City'),'Separate City confirmation from the checklist title');
@@ -129,6 +142,7 @@ window.addEventListener('load',async()=>{
     check(rows[1].getBoundingClientRect().top >= rows[0].getBoundingClientRect().bottom-1,'Expanded checklist detail overlaps the next row');
     detail.open=false;
     const email=document.querySelector('.coordination-form');
+    check(document.querySelector('.email-section').textContent.includes('specific questions for the department you select'),'Explain the purpose of the email draft');
     email.elements.applicantName.value='Test Applicant';
     email.elements.applicantEmail.value='applicant@example.com';
     await email.onsubmit({preventDefault(){}});

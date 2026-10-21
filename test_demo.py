@@ -58,7 +58,7 @@ class DemoTests(unittest.TestCase):
 
     def test_property_lookup_does_not_cache_applicant_address_in_demo(self):
         project=update_project(empty_project(),{'location':{'value':'701 San Marco','evidence':'701 San Marco'}},'701 San Marco')
-        extraction={'updates':{}}
+        extraction={'updates':{'project_description':{'value':'restaurant','evidence':'A restaurant'}}}
         reply={'message':'The restaurant scope needs confirmation.','question':'What work is proposed?','ready_for_brief':False,'source_ids':[],'fee_id':''}
         with patch.object(app,'complete_json',side_effect=[extraction,reply]),patch.object(app,'research_context',return_value={'sources':[],'fees':[],'property':{}}) as research:
             app.openai_chat([{'role':'user','text':'A restaurant'}],project)

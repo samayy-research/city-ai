@@ -24,6 +24,57 @@ def project(values):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_missing_address_repeats_and_removes_premature_advice(self):
+        record = project({"project_description": "build a restaurant"})
+        record["intake_asked_fields"] = ["location"]
+        result = app.apply_question_policy({"ready_for_brief": True,
+            "message": "You need a COU costing $112.", "fee_id": "cou", "source_ids": ["cou"]}, record)
+        self.assertEqual(result["question_field"], "location")
+        self.assertFalse(result["ready_for_brief"])
+        self.assertNotIn("COU", result["message"])
+        self.assertEqual(result["fee_id"], "")
+        self.assertEqual(result["source_ids"], [])
+
+    def test_address_first_then_missing_proposed_scope(self):
+        self.assertEqual(app.apply_question_policy({}, empty_project())["question_field"], "location")
+        for location in ("123 Main St", "not_sure"):
+            record = project({"location": location, "existing_use": "office"})
+            result = app.apply_question_policy({"ready_for_brief": True}, record)
+            self.assertEqual(result["question_field"], "project_description")
+            self.assertFalse(result["ready_for_brief"])
+
+    def test_model_cannot_repeat_explicitly_unknown_address(self):
+        record = project({"location":"not_sure", "project_description":"restaurant"})
+        result = app.apply_question_policy({"ready_for_brief":False, "question_field":"location",
+            "message":"You must supply an address.", "question":"What is the address?"}, record)
+        self.assertNotEqual(result["question_field"], "location")
+        self.assertNotIn("must supply", result["message"])
+
+    def test_intake_blocks_research_advice_and_live_plan_until_address_response(self):
+        record = project({"project_description": "build a restaurant", "business_use": "yes"})
+        record["intake_asked_fields"] = ["location"]
+        with patch.object(app, "OPENAI_API_KEY", "test"), patch.object(app, "complete_json", return_value={"updates":{}}) as provider, patch.object(app, "research_context") as research:
+            result = app.workspace_result(app.openai_chat([{"role":"user", "text":"It will serve dinner."}], record))
+        self.assertEqual(provider.call_count, 1)
+        research.assert_not_called()
+        self.assertEqual(result["question_field"], "location")
+        self.assertIsNone(result["live_plan"])
+        self.assertIsNone(result["brief"])
+        self.assertEqual(result["citations"], [])
+
+    def test_explicit_unknown_address_allows_scope_guidance_and_later_address(self):
+        record = project({"project_description": "build a restaurant"})
+        extraction = {"updates":{"location":{"value":"not_sure", "evidence":"I haven't chosen an address yet"}}}
+        context = {"sources":[], "fees":[], "property":{"status":"needs_address"}}
+        with patch.object(app, "OPENAI_API_KEY", "test"), patch.object(app, "complete_json", side_effect=[extraction, {"message":"Let's clarify the planned work.", "ready_for_brief":True}]), patch.object(app, "research_context", return_value=context) as research:
+            result = app.workspace_result(app.openai_chat([{"role":"user", "text":"I haven't chosen an address yet"}], record))
+        research.assert_called_once()
+        self.assertNotEqual(result["question_field"], "location")
+        self.assertIsNotNone(result["live_plan"])
+        updated = update_project(result["project"], {"location":{"value":"123 Main St", "evidence":"123 Main St"}}, "123 Main St")
+        self.assertFalse(app.intake_missing(updated))
+        self.assertEqual(updated["fields"]["location"]["value"], "123 Main St")
+
     def test_address_policy_follows_a_project_description(self):
         record=project({"project_description":"convert an office to a restaurant"})
         result=app.apply_question_policy({"message":"I can help.","question":"What work is planned?","ready_for_brief":False},record)
@@ -89,7 +140,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(steps["row"]["status"], "unresolved")
         self.assertIn("jurisdiction", steps["row"]["exception_note"])
 
-    def test_department_email_is_short_specific_and_has_one_request(self):
+    def test_department_email_explains_purpose_scope_and_requested_inputs(self):
         record = project({"existing_use":"office", "proposed_use":"restaurant", "project_description":"convert an office to a restaurant",
                           "business_use":"yes", "interior_work":"yes", "site_work":"yes", "site_changes":"a new driveway", "alterations":"interior partitions"})
         draft = email_draft(record, build_brief(record), "Zoning / Certificate of Use (COU)", "Applicant", "applicant@example.com")
@@ -98,7 +149,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("driveway", draft["body"])
         self.assertNotIn("checklist", draft["body"].lower())
         self.assertEqual(draft["body"].count("?"), 1)
-        self.assertLess(len(draft["body"].split()), 180)
+        self.assertIn("seeking preliminary guidance from Zoning", draft["body"])
+        self.assertIn("not City determinations", draft["body"])
+        self.assertIn("Based on:", draft["body"])
+        self.assertIn("documents, plans or additional project details", draft["body"])
+        self.assertIn("advisor also suggested checking", draft["body"])
+
+    def test_email_lists_each_department_specific_open_question(self):
+        record = project({"project_description":"convert an office to a restaurant", "location":"123 Main St", "business_use":"yes"})
+        brief = build_brief(record)
+        team = "Building Inspection Division / Permit Coordinator"
+        selected = [step for step in brief["action_plan"] if step["department"] == team and step["status"] == "unresolved"]
+        self.assertGreater(len(selected), 1)
+        body = email_draft(record, brief, team)["body"]
+        self.assertIn("Open questions to resolve:", body)
+        for step in selected:
+            self.assertIn(step["request"], body)
+        unrelated = next(step for step in brief["action_plan"] if step["id"] == "mobility")
+        self.assertNotIn(unrelated["request"], body)
+
+    def test_email_and_summary_explain_undecided_location(self):
+        record = project({"project_description":"open a restaurant", "location":"not_sure", "business_use":"yes"})
+        brief = build_brief(record)
+        body = email_draft(record, brief, "Zoning / Certificate of Use (COU)")["body"]
+        self.assertNotIn("not_sure", body)
+        self.assertNotIn("not_sure", brief["project_summary"])
+        self.assertIn("location-specific checks remain open", body)
+        located = email_draft(record, brief, "Zoning / Certificate of Use (COU)", location="123 Main St")["body"]
+        self.assertIn("123 Main St", located)
+        self.assertNotIn("location is not yet established", located)
 
     def test_all_steps_have_source_and_rule_version(self):
         for step in build_brief(empty_project())["action_plan"]:
@@ -249,11 +328,11 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertEqual(next(topic for topic in intake_progress(fixed)["topics"] if topic["id"] == "site")["status"], "covered")
 
     def test_followup_has_live_plan_but_no_final_report(self):
-        record = project({"business_use":"yes", "existing_use":"office", "proposed_use":"restaurant"})
-        result = app.workspace_result({"stage":"follow_up", "project":record, "brief":None, "question_field":"location"})
+        record = project({"business_use":"yes", "existing_use":"office", "proposed_use":"restaurant", "location":"not_sure"})
+        result = app.workspace_result({"stage":"follow_up", "project":record, "brief":None, "question_field":"interior_work"})
         self.assertIsNone(result["brief"])
         self.assertEqual(result["live_plan"], build_brief(record))
-        self.assertEqual(next(topic for topic in result["progress"]["topics"] if topic["id"] == "location")["status"], "active")
+        self.assertEqual(next(topic for topic in result["progress"]["topics"] if topic["id"] == "location")["status"], "uncertain")
 
 
 class DeploymentConfigurationTests(unittest.TestCase):
