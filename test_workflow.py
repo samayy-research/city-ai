@@ -24,6 +24,31 @@ def project(values):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_checklist_uses_requested_order_across_mixed_statuses(self):
+        brief = build_brief(project({"business_use": "yes", "historic_review": "yes",
+                                     "site_work": "yes", "occupancy_change": "yes",
+                                     "interior_work": "yes", "specialized_review": "yes",
+                                     "plumbing": "yes", "right_of_way": "yes"}))
+        expected = ["use", "mobility", "historic", "site", "occupancy", "building",
+                    "specialty", "plumbing", "row"]
+        self.assertEqual([step["id"] for step in brief["action_plan"]], expected)
+        # Mobility remains unresolved and stays second, ahead of applicable routes.
+        self.assertEqual(brief["action_plan"][1]["status"], "unresolved")
+        self.assertEqual(brief["action_plan"][0]["status"], "applicable")
+
+    def test_subset_keeps_order_and_preserves_excluded_sections(self):
+        brief = build_brief(project({"business_use": "no", "historic_review": "yes",
+                                     "site_work": "yes", "occupancy_change": "yes",
+                                     "interior_work": "no", "specialized_review": "no",
+                                     "plumbing": "no", "right_of_way": "no"}))
+        active = [step["id"] for step in brief["action_plan"] if step["status"] != "not_applicable"]
+        self.assertEqual(active, ["historic", "site", "occupancy"])
+        self.assertEqual([step["id"] for step in brief["action_plan"] if step["status"] == "not_applicable"],
+                         ["use", "building", "specialty", "plumbing", "row"])
+        # Conditional sections are not fabricated just to fill an ordering slot.
+        self.assertNotIn("mobility", [step["id"] for step in brief["action_plan"]])
+        self.assertNotIn("historic", [step["id"] for step in build_brief(empty_project())["action_plan"]])
+
     def test_missing_address_repeats_and_removes_premature_advice(self):
         record = project({"project_description": "build a restaurant"})
         record["intake_asked_fields"] = ["location"]

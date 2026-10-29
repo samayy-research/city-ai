@@ -65,8 +65,10 @@ a { color: var(--blue-dark); text-underline-offset: 3px; overflow-wrap: anywhere
 .step-copy { min-width: 0; }
 .step-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
 .step-heading strong { flex: 1 1 220px; font-size: .97rem; line-height: 1.45; color: var(--navy); }
-.status-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: .68rem; font-weight: 650; color: #236b4f; background: #edf7f1; }
+.status-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: .68rem; font-weight: 650; color: #245d89; background: #eaf3fb; }
 .status-pill.unresolved { color: #805719; background: #fff5de; }
+.checklist-guidance { color: var(--muted); font-size: .84rem; }
+.step-copy .clarification-note, .live-step .clarification-note { margin: 4px 0; font-size: .82rem; line-height: 1.4; color: #805719; }
 .step-copy .step-department { margin: 5px 0 8px; font-size: .82rem; color: var(--muted); }
 .step-copy .dependency { margin: 8px 0; color: #4c6472; font-size: .82rem; }
 .step-copy details { margin-top: 10px; }
@@ -194,6 +196,8 @@ progress::-moz-progress-bar { background: var(--blue); border-radius: 99px; }
 .live-step summary::marker { color: #7c8c7a; font-size: .7rem; }
 .live-step-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 6px 0 0 13px; }
 .live-step-status { font-size: .62rem; color: #66705f; font-weight: 400; }
+.live-step-status.applicable { color: #245d89; }
+.live-step-status.unresolved { color: #805719; }
 .update-tag { color: var(--blue-dark); background: #e3edde; border-radius: 4px; padding: 1px 5px; font-size: .6rem; }
 .live-step p, .live-step a { font-size: .72rem; line-height: 1.6; }
 .live-department { font-weight: 600; }

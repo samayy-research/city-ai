@@ -123,7 +123,8 @@ window.addEventListener('load',async()=>{
     check(performance.now()-checklistStarted>=5000,'Pause five seconds before showing the checklist');
     check(document.querySelectorAll('.brief').length===1,'One plan should appear');
     check(document.querySelector('.plan-step .step-heading strong').textContent==='Zoning & Certificate of Use (COU)','Use concise checklist names');
-    check([...document.querySelectorAll('.plan-step .status-pill')].every(pill=>pill.textContent==='Confirm with the City'),'Separate City confirmation from the checklist title');
+    check([...document.querySelectorAll('.plan-step .status-pill')].every(pill=>pill.textContent===(pill.classList.contains('unresolved')?'Needs clarification':'Likely needed')),'Explain checklist status in words');
+    check([...document.querySelectorAll('.plan-step')].every(row=>!row.querySelector('.status-pill.unresolved') || row.querySelector('.clarification-note')?.textContent),'Explain what unresolved checklist items need');
     check(document.querySelector('.historic-site-details .historic-card'),'Keep report site details with the historic checklist item');
     check(document.querySelector('.open-topics').textContent.includes('Still to confirm'),'Explain incomplete topics alongside the preliminary report');
     check(document.querySelectorAll('.topic.deferred').length > 0,'Unfinished topics become explicit City confirmations');
@@ -135,7 +136,9 @@ window.addEventListener('load',async()=>{
     check(rows.length > 0,'Checklist must render as numbered rows');
     rows.forEach((row,index)=>{
       const bounds=row.getBoundingClientRect();
-      check(bounds.height < 240,'Checklist row stretched to the height of its parent');
+      const clarification=row.querySelector('.clarification-note');
+      const clarificationHeight=clarification ? clarification.getBoundingClientRect().height+8 : 0;
+      check(bounds.height-clarificationHeight < 240,'Checklist row stretched beyond its content');
       if(index) check(bounds.top >= rows[index-1].getBoundingClientRect().bottom-1,'Checklist rows overlap');
     });
     const detail=rows[0].querySelector('details'); detail.open=true;

@@ -13,6 +13,10 @@ DETAIL_KEYS = ("existing_use", "proposed_use", "location", "alterations", "site_
                "specialty_work", "existing_approvals", "project_description", "site_activity", "right_of_way_authority",
                "floor_area", "cooking_method", "construction_budget", "project_type", "exterior_work")
 FACT_VALUES = {"yes", "no", "not_sure", "unknown"}
+# Presentation order only; applicability and formal prerequisites remain rule-driven.
+CHECKLIST_ORDER = ("use", "mobility", "historic", "site", "occupancy", "building",
+                   "specialty", "plumbing", "row")
+CHECKLIST_RANK = {identifier: index for index, identifier in enumerate(CHECKLIST_ORDER)}
 
 
 def empty_project() -> dict:
@@ -223,6 +227,9 @@ def build_brief(project: dict) -> dict:
                       "guidance":"CMMSO reviews mobility applications and legacy development rights. A change of use merits checking review needs, credits and exemptions even if there is no exterior work.",
                       "exceptions":"The calculation-certificate fee is not the actual mobility fee. No traffic rate, exemption or fee total has been established for this project.",
                       "exception_note":"", "rule_version":RULE_BASE["version"]})
+    # Sort after conditional steps are added. Keep additional sections in their
+    # original relative order after the requested sections, without dropping any.
+    steps.sort(key=lambda step: CHECKLIST_RANK.get(step["id"], len(CHECKLIST_ORDER)))
     fee_ids = {"use":{"cou-new"}, "occupancy":{"alterations-bid-permit-fee","alterations-minimum-bid-permit-fee","plans-examination"},
                "building":{"alterations-bid-permit-fee","alterations-minimum-bid-permit-fee","plans-examination"},
                "mobility":{"mobility-certificate","mobility-de-minimis"}, "specialty":{"hood-review"}}

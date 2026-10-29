@@ -68,6 +68,12 @@ class HistoricTests(unittest.TestCase):
         step=next(step for step in build_brief(record)['action_plan'] if step['id']=='archaeology')
         self.assertEqual(step['status'],'unresolved')
         self.assertIn('ground disturbance',step['title'])
+        # Keep the additional archaeological section after all requested sections,
+        # including mobility, which is generated after archaeology.
+        record = update_project(record, {'business_use':{'value':'yes','evidence':'new business use'}}, 'new business use')
+        ids = [step['id'] for step in build_brief(record)['action_plan']]
+        self.assertEqual(ids[:3], ['use', 'mobility', 'historic'])
+        self.assertEqual(ids[-1], 'archaeology')
 
     def test_failed_archaeology_query_does_not_become_a_negative(self):
         result=self.lookup(fail_layer=40)

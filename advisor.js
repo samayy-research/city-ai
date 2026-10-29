@@ -71,10 +71,11 @@ function renderWorkspace(result = {}) {
     detail.dataset.step = step.id; detail.open = openIds.has(step.id);
     const summary = node('summary'); summary.append(node('span', checklistTitle(step)));
     const meta = node('span', '', 'live-step-meta');
-    meta.append(node('span', 'Confirm with the City', 'live-step-status'));
+    meta.append(node('span', checklistStatus(step), 'live-step-status ' + step.status));
     if (updated || added) meta.append(node('span', updated ? 'Updated' : 'Added', 'update-tag'));
     summary.append(meta); detail.append(summary, node('p', step.department, 'live-department'));
     detail.append(node('p', step.request));
+    if (step.status === 'unresolved') detail.append(node('p', clarificationReason(step), 'clarification-note'));
     if (step.evidence.length) detail.append(node('p', (step.evidence_label || 'You shared') + ': ' + step.evidence.join(' / ')));
     if (step.exception_note) detail.append(node('p', step.exception_note));
     if (step.prerequisites.length) detail.append(node('p', 'First: ' + step.prerequisites.map(id => checklistTitle(result.live_plan.action_plan.find(item => item.id === id) || {id,title:id})).join('; ')));
@@ -124,6 +125,38 @@ function checklistTitle(step) {
     archaeology:'Archaeological review', mobility:'Mobility review & fees'};
   const title = step.title.replace(/^(?:Resolve whether to )?(?:confirm )?/i, '');
   return titles[step.id] || title.charAt(0).toUpperCase() + title.slice(1);
+}
+function checklistStatus(step) {
+  return step.status === 'applicable' ? 'Likely needed' : 'Needs clarification';
+}
+function clarificationReason(step) {
+  if (currentProject?.conflicts?.[step.field]) return 'You shared different details about this scope. Clarify which details apply.';
+  if (step.evidence.length) {
+    const checks = {
+      use:'Use eligibility and the COU steps still need clarification.',
+      occupancy:'The occupancy classification still needs clarification.',
+      building:'The permit scope for the planned alterations needs clarification.',
+      plumbing:'The plumbing permit scope still needs clarification.',
+      site:'Site-review requirements for this scope need clarification.',
+      specialty:'The appropriate specialty reviewers still need to be identified.',
+      mobility:'The City needs to check fees, credits and review needs.',
+      historic:'The historic findings need checking against the planned work.',
+      archaeology:'Ground-disturbance plans need checking against mapped sensitivity.',
+      row:'The responsible agency and permit route need clarification.'
+    };
+    return checks[step.id] || step.request;
+  }
+  const gaps = {
+    use:'We haven’t established whether the business use will change.',
+    occupancy:'The occupancy classification hasn’t been established.',
+    building:'We haven’t established whether building work is planned.',
+    plumbing:'We haven’t established whether plumbing work is planned.',
+    site:'We haven’t established whether site or parking changes are planned.',
+    row:'We haven’t established whether work will affect the public right-of-way.',
+    specialty:'Trade, fire or other agency review needs are unclear.',
+    historic:'Historic status and the scope of exterior or site work still need clarification.'
+  };
+  return gaps[step.id] || 'More project details are needed to determine whether this review applies.';
 }
 function historicCard(expanded = false) {
   const finding = currentProject?.research?.historic;
@@ -187,6 +220,7 @@ function renderBrief(brief) {
   const checklistHeading = node('div', '', 'checklist-heading');
   checklistHeading.append(node('h3', 'Project checklist'), node('span', steps.length + ' actions to coordinate', 'checklist-count'));
   article.append(checklistHeading);
+  article.append(node('p', 'The City will confirm final requirements. Likely needed means your answers suggest this review applies. Needs clarification means more information is needed to decide.', 'checklist-guidance'));
   const checklist = node('ol', '', 'project-checklist');
   steps.forEach((step, index) => {
     const row = node('li', '', 'plan-step');
@@ -194,10 +228,10 @@ function renderBrief(brief) {
     const copy = node('div', '', 'step-copy');
     const heading = node('div', '', 'step-heading');
     const title = checklistTitle(step);
-    const confirmation = node('span', 'Confirm with the City', 'status-pill ' + step.status);
-    confirmation.title = step.status === 'unresolved' ? 'Applicability remains unresolved; confirm with City staff.' : 'Preliminary route based on reported scope; confirm with City staff.';
+    const confirmation = node('span', checklistStatus(step), 'status-pill ' + step.status);
     heading.append(node('strong', title), confirmation);
     copy.append(heading, node('p', step.department, 'step-department'));
+    if (step.status === 'unresolved') copy.append(node('p', clarificationReason(step), 'clarification-note'));
     if (step.prerequisites.length) {
       const titles = step.prerequisites.map(id => checklistTitle(brief.action_plan.find(s => s.id === id) || {id,title:id}));
       copy.append(node('p', 'First: ' + titles.join('; '), 'dependency'));
@@ -305,6 +339,7 @@ function resetProject() {
 }
 form.onsubmit=async event=>{
   event.preventDefault(); const message=input.value.trim(); if(!message || pending)return;
+  input.value='';
   pending=true; send.disabled=true; input.disabled=true; send.textContent='Thinking…';
   document.querySelector('#restart').disabled=true;
   chat.setAttribute('aria-busy', 'true');
@@ -318,7 +353,7 @@ form.onsubmit=async event=>{
     else demoState=result.state || '';
     currentProject=result.project;
     renderWorkspace(result);
-    input.value=''; form.classList.add('has-context'); input.placeholder='Reply, add details, or correct the project…';
+    form.classList.add('has-context'); input.placeholder='Reply, add details, or correct the project…';
     bubble(result.message, 'assistant', result.citations || []); chat.querySelector('.brief')?.remove(); currentBrief=null;
     if(result.brief) {
       const completion=bubble('Thank you—I have the information needed for a preliminary checklist. ' + result.brief.project_summary + '\n\nI’ll now generate your checklist to help you identify potential reviews, required inputs, and documents or project details to prepare. The City will confirm what applies. If you have questions or need to resolve an open item, use “Prepare a City email” below to generate a draft for the relevant department. Review it, then open it in your email app to send.');
@@ -328,11 +363,20 @@ form.onsubmit=async event=>{
       renderBrief(result.brief);
       chat.querySelector('.brief').scrollIntoView({behavior:'smooth',block:'start'});
     } else user.scrollIntoView({behavior:'smooth',block:'start'});
-  }catch(err){loading.remove();user.remove();bubble(err.message + ' Your reply is still below so you can retry.','error');}
+  }catch(err){input.value=message;loading.remove();user.remove();bubble(err.message + ' Your reply is still below so you can retry.','error');}
   finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';document.querySelector('#restart').disabled=false;chat.setAttribute('aria-busy','false');input.focus({preventScroll:true});}
 };
 input.maxLength=6000;
-input.addEventListener('keydown',event=>{if((event.ctrlKey || event.metaKey) && event.key==='Enter'){event.preventDefault();form.requestSubmit();}});
+input.addEventListener('keydown',event=>{
+  if(event.key!=='Enter' || event.isComposing || event.keyCode===229)return;
+  if(event.ctrlKey || event.metaKey){
+    event.preventDefault();
+    input.setRangeText('\n',input.selectionStart,input.selectionEnd,'end');
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+  }else if(!event.shiftKey){
+    event.preventDefault();form.requestSubmit();
+  }
+});
 async function resumeProject() {
   if (!persistentMode) { resetProject(); return; }
   if(!projectId){resetProject();return;}

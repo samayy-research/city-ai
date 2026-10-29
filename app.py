@@ -285,7 +285,7 @@ HTML = r'''<!doctype html>
     <label class="sr-only" for="message">Describe your project or reply to the advisor</label>
     <textarea id="message" required placeholder="Tell me what you are planning…"></textarea>
     <div class="controls">
-      <span>Do not include sensitive information. Ctrl + Enter to send.</span>
+      <span>Do not include sensitive information. Enter to send. Shift + Enter or Ctrl + Enter for a new line.</span>
       <button id="send" type="submit">Send</button>
     </div>
   </form>
