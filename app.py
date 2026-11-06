@@ -6,6 +6,7 @@ Set OPENAI_API_KEY before starting the server. No Python packages are needed.
 from __future__ import annotations
 
 import json
+import difflib
 import logging
 import os
 import ssl
@@ -15,7 +16,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from project_workflow import RULES, empty_project, upgrade_project, update_project, routing_facts, build_brief, intake_progress
+from project_workflow import RULES, empty_project, upgrade_project, update_project, routing_facts, build_brief, intake_progress, construction_type, construction_context
 import project_store
 import demo_session
 from city_research import research_context
@@ -96,10 +97,26 @@ def add_security_headers(handler: BaseHTTPRequestHandler) -> None:
 EXTRACTION_PROMPT = """You are Jax Project Advisor, a warm, precise preliminary project-readiness
 assistant for Jacksonville. You are not a City employee and cannot confirm or approve permits.
 
-Guide a natural conversation. Ask at most ONE short, plain-language question per turn, selected
-because its answer could change the preliminary path. Ask about observable activities and work,
-not technical occupancy classifications. Do not use a fixed sequence or assume specialty work
-requires interior construction. A location can be acknowledged warmly, but do not infer zoning,
+Extract the project intent AND location together, even when the message contains
+typos. Address-first is a question priority, not an instruction to extract only an
+address. 'hi im renovatig a retsyuarnt at 701 san marco blv' already describes a
+restaurant renovation and a reported address. Evidence must quote the original
+spelling, even when the stored value uses corrected spelling.
+Save the proposed activity in proposed_use as well as project_description when it is
+explicit (for example, restaurant). A later short reply updates only the details it
+supports; it must not make the previously stated activity unknown again.
+An unused/vacant space describes its current condition, not its last approved use.
+Do not turn 'yes, all that' to a systems question into confirmation of a new hood.
+Always save the decision for pending_intake_field when the reply answers it, as well as
+any supported detail text. For a plumbing question, 'yes i will add sinks and plaumbing
+for the sink not restrooms' means plumbing yes. The restroom limitation narrows the work;
+it does not negate the sink plumbing. Never save only a narrative and omit the decision.
+
+The server selects questions from an ordered checklist. Your role is to extract the reply into
+every checklist field it actually answers, keeping all earlier supported facts. A single reply
+can resolve several fields. Use the saved pending_intake_field to interpret a short yes/no reply.
+Do not infer plumbing, equipment or site work from interior work alone. A location can be
+acknowledged warmly, but do not infer zoning,
 flood, historic status or jurisdiction from it.
 Prioritize a detail that changes the first action or a prerequisite. For use changes, the
 existing and proposed activities are more useful than asking the visitor to classify occupancy.
@@ -114,12 +131,24 @@ ask one gentle clarification. Do not guess that a use change changes occupancy c
 
 For fields business_use, occupancy_change, interior_work, plumbing, site_work, right_of_way,
 specialized_review, historic_review use yes, no, not_sure, or unknown. Use not_sure only for explicit uncertainty.
+A restaurant is a business use. Save business_use yes with the applicant's restaurant quote.
+Establish project_type as new_construction or existing_building from explicit scope. A 'new
+business' or 'new dispensary' does not establish a new building. 'From the ground up' or 'new
+building' does. New construction already establishes building work; do not ask about altering
+an existing interior or prior tenant use. Ask about planned fixtures/systems rather than replacing
+them. Never assume new construction automatically confirms plumbing or particular fire systems.
+If a reply explicitly rules out ALL exterior/site work INCLUDING street access, save both
+site_work no and right_of_way no. A reply about parking alone does not resolve street access.
 Other fields contain concise applicant-supported text: existing_use, proposed_use, location,
 alterations, site_changes, specialty_work, existing_approvals, project_description,
 floor_area, cooking_method, construction_budget, project_type, exterior_work. For
 project_description keep a concise phrase explaining what the applicant plans to do. An update
 may summarize the current scope using the saved record, but its evidence quote must be from
 the current applicant message. Existing approvals are reported, never verified.
+
+When the latest reply explicitly confirms a suggested GIS address in saved research,
+update location to that official address with correction true and the exact confirmation
+quote. Keep unconfirmed spelling suggestions separate from the reported location.
 
 Set ready_for_brief true when enough scope is known for a useful preliminary coordination plan.
 Remaining uncertainty belongs in that plan; do not exhaustively interview. If a visitor cannot
@@ -156,16 +185,43 @@ Return JSON:
 SYSTEM_PROMPT = """You are Jax Project Advisor, a warm and knowledgeable preliminary Jacksonville
 project-readiness assistant. You are independent of the City and cannot confirm or approve permits.
 
+This intake prepares applicants for their FIRST meeting with City staff. Give only
+brief, high-level context about possible reviews while collecting the project scope.
+Do not ask whether they contacted the City, confirmed zoning/COU steps, or obtained
+approvals. Do not offer a COU tutorial or ask whether they want procedural guidance.
+Put those next steps, documents to bring and questions for departments in the
+preliminary checklist. Capture approvals if volunteered; they are not prerequisites
+to receiving this preparation checklist. Answer an explicit applicant question,
+then return to missing project facts or finish the checklist.
+For a business project, introduce zoning/Certificate of Use coordination early as
+a topic to confirm, considering any reported existing approvals. Keep this brief;
+the checklist contains the process steps. Do not assume every renovation needs a
+new certificate or repeat the COU explanation on every turn.
+
 Location and proposed project scope come before permit or fee guidance. If the saved location is
 not_sure, proceed using the project scope without re-asking the address. Explain that guidance is
 preliminary and location-specific zoning, historic and jurisdiction checks remain open.
 
 Every turn should help the visitor understand the project, not merely acknowledge and interview.
+The server owns an ordered checklist: use/COU context, interior work, plumbing,
+equipment/systems, site/parking, then street access. It skips fields already answered or deferred.
+Establish new construction versus an existing building first when unclear. For new construction,
+skip prior tenant use and interior alterations; discuss planned new fixtures, systems and site
+work. Use the recorded construction_context and do not describe new construction as a renovation.
+Do not choose additional topics, reopen proposed use, or prolong the checklist. Explain the
+latest answer briefly; the server supplies the next checklist question and decides completion.
 Give 1–3 short sentences about the most relevant likely requirement or consequence of the detail
 just shared, grounded in the provided City sources. Then ask ONE short, natural follow-up when its
 answer could change the next action. Prefer existing space, actual cooking, floor area or scope
 questions over technical occupancy classifications. Never produce a long permit/fee checklist in
-chat. Address a direct question, including mobility fees or design professionals, before following
+chat. Each follow-up must stay within one scope group: interior/plumbing, equipment/systems,
+site/parking, or street access. Never combine interior work with site/parking in one question.
+Do not reopen an answered or previously asked group through another field such as site_changes.
+An activity already recorded in project_description answers the generic proposed-use question,
+even if proposed_use was not separately populated. Never ask 'What will the space be used for?'
+after the applicant has described their restaurant project. Ask a narrower missing fact instead.
+Vacancy does not establish the previous approved use; carry that uncertainty into the checklist.
+Address a direct question, including mobility fees or design professionals, before following
 up. Do not re-explain every known permit on every turn. Keep message under 50 words, preferably
 two sentences, and the question under 25 words. The server adds the fee sentence separately.
 Use plain language rather than terms like "candidate address", "ambiguous parcels" or long lists
@@ -197,7 +253,13 @@ A possible converting-use review is not a confirmed permit requirement for this 
 
 Prices are handled from exact fetched fee records by the server. Select at most ONE relevant
 fee_id from the supplied fees when it would be useful. Never put a dollar amount or a calculated
-project total in message or question. For COU, distinguish the application fee from total costs;
+project total in message or question. During scope intake, leave fee_id empty unless the visitor
+asks about fees. Plumbing or a general systems confirmation does not establish a new hood.
+Describe potential building/trade/fire reviews conditionally; do not announce permits as confirmed
+requirements from a brief scope answer. Historic/archaeological findings are disclosed by the
+server: do not repeat those warnings in each reply. Sensitivity alone does not establish a
+mandatory ground-disturbance review.
+For COU, distinguish the application fee from total costs;
 for mobility, distinguish the calculation-certificate/review fees from the actual project-specific
 mobility fee. If the price source is unavailable, leave fee_id empty and explain the limitation.
 Use source_ids only for sources that actually support the advice, including any property record.
@@ -238,7 +300,7 @@ Return ONLY JSON:
   "fee_id":"one id from the fetched fee records, or empty"
 }
 """
-ASSET_VERSION = "20261020-historic6"
+ASSET_VERSION = "20261106-pilot-outlook"
 
 HTML = r'''<!doctype html>
 <html lang="en">
@@ -252,6 +314,7 @@ HTML = r'''<!doctype html>
 <main class="wrap">
   <header class="app-header">
     <div class="brand-identity">
+      <img class="brand-logo" src="/827-8272823_city-of-jax-logo-city-of-jacksonville-logo.png" alt="City of Jacksonville logo" width="68" height="68" decoding="async">
       <div><div class="eyebrow">JACKSONVILLE · PROJECT READINESS</div><h1>Jax Project Advisor</h1></div>
     </div>
     <p class="app-intro">Tell us about your project to understand which permits and reviews may apply. Answer focused questions, track your progress in the project sidebar, and generate a preliminary checklist of next steps to confirm with the City.</p>
@@ -277,7 +340,7 @@ HTML = r'''<!doctype html>
     <p id="plan-update" class="plan-update" role="status"></p>
   </aside>
   <section class="conversation-panel" id="conversation-panel" aria-label="Chat with your project advisor">
-  <div class="conversation-heading"><div><span class="eyebrow">LET’S WORK THROUGH IT</span><h2>Your project advisor</h2></div><span class="session-label">One question at a time</span></div>
+  <div class="conversation-heading"><div><span class="eyebrow">LET’S WORK THROUGH IT</span><h2>Your project advisor</h2></div><div class="conversation-tools"><span class="session-label">One question at a time</span><button type="button" id="pilot-feedback" class="secondary-action feedback-button">Email pilot feedback</button></div></div>
   <div class="chat-scroll" id="chat-scroll">
   <section class="chat" id="chat" aria-live="polite" aria-label="Project conversation"></section>
   </div>
@@ -291,6 +354,21 @@ HTML = r'''<!doctype html>
   </form>
   </section>
   </div>
+  <dialog id="feedback-dialog" aria-labelledby="feedback-title">
+    <form id="feedback-form">
+      <div class="panel-heading"><h2 id="feedback-title">Pilot feedback</h2><button type="button" id="feedback-close" class="text-button">Close</button></div>
+      <p>Add your comments and include the full conversation in an email for the pilot team.</p>
+      <label for="feedback-recipient">Send to</label><input id="feedback-recipient" type="email" required autocomplete="email">
+      <label for="feedback-comments">Your feedback</label><textarea id="feedback-comments" rows="5" placeholder="What worked? What was confusing or incorrect? What should change?"></textarea>
+      <p class="source">Subject: Feedback City Pilot</p>
+      <button type="submit">Review feedback email</button>
+      <section id="feedback-review" hidden aria-label="Feedback email draft">
+        <label for="feedback-preview">Complete email draft</label><textarea id="feedback-preview" rows="12" readonly></textarea>
+        <p id="feedback-status" role="status"></p>
+        <div class="feedback-actions"><button type="button" id="feedback-copy" hidden>Copy full feedback</button><a id="feedback-open" class="email-open" target="_blank" rel="noopener noreferrer">Open Outlook</a></div>
+      </section>
+    </form>
+  </dialog>
 </main>
 <script src="/advisor.js?v=__ASSET_VERSION__" defer></script>
 </body>
@@ -306,7 +384,8 @@ def page_html() -> str:
             + escape(TURNSTILE_SITE_KEY, quote=True)
             + '";</script><script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>'
         )
-    mode_script='<script>window.PROJECT_STORAGE_MODE='+json.dumps(project_store.storage_mode())+';</script>'
+    feedback_email = json.dumps(os.environ.get('PILOT_FEEDBACK_EMAIL', '').strip() or 'samay.shetty@haskell.com').replace('<', '\\u003c')
+    mode_script='<script>window.PROJECT_STORAGE_MODE='+json.dumps(project_store.storage_mode())+';window.PILOT_FEEDBACK_EMAIL='+feedback_email+';</script>'
     return HTML.replace("__ASSET_VERSION__", ASSET_VERSION).replace("</head>",mode_script+turnstile+"</head>")
 
 
@@ -338,9 +417,95 @@ def complete_json(messages: list[dict]) -> dict:
     return result
 
 
+def first_stated_intent(statement: str) -> dict:
+    """Keep a clear initial proposal verbatim when extraction misses its scope.
+
+Only a description is recovered. This never infers trade flags, project type,
+approvals or a new business from a misspelled activity or building name.
+"""
+    text = re.sub(r"^(?:hi|hello|hey)\b[\s,!.:—-]*", "", statement.strip(), flags=re.I)
+    text = re.sub(r"^(?:(?:i['’]?m|we['’]re)\s+|(?:i|we)\s+(?:(?:am|are)\s+)?)"
+                  r"(?:(?:want|plan|intend|would\s+like)\s+to\s+|(?:planning|going)\s+to\s+|will\s+)?",
+                  "", text, flags=re.I)
+    action = re.match(r"[A-Za-z]+(?=\s+)", text)
+    verbs = ('renovate', 'renovating', 'remodel', 'remodeling', 'build', 'building', 'open', 'opening',
+             'convert', 'converting', 'add', 'adding', 'expand', 'expanding', 'install', 'installing', 'replace', 'replacing')
+    if (not action or '?' in text or re.search(r"\b(if|hypothetical|maybe|might)\b", text, re.I)
+            or not difflib.get_close_matches(action[0].lower(), verbs, n=1, cutoff=.84)):
+        return {}
+    address = re.search(r"\bat\s+\d{1,6}\s+[A-Za-z]", text, re.I)
+    description = (text[:address.start()] if address else text).strip().rstrip(',.;')[:1200]
+    if len(description[action.end():].strip()) < 3:
+        return {}
+    return {'value': description, 'evidence': description}
+
+
+INTAKE_SCOPE_QUESTIONS = (
+    ('interior_work', 'Will you change anything inside the space, such as walls, layout or finishes?', 'Interior changes can affect the building review route.'),
+    ('plumbing', 'Will you add, move or replace any sinks, restrooms or other plumbing?', 'Plumbing changes can add a trade review to your checklist.'),
+    ('specialized_review', 'Will you install or change any cooking equipment, ventilation, electrical, heating or fire-safety systems?', 'Equipment and system changes can affect trade or specialty review, even without other construction.'),
+    ('site_work', 'Will anything change outside, such as parking, signs, landscaping or drainage?', 'Exterior and parking changes can affect site review.'),
+    ('right_of_way', 'Will the project change a driveway, sidewalk or connection to the street?', 'Access changes can require confirmation of right-of-way jurisdiction and review.'),
+)
+NEW_CONSTRUCTION_QUESTIONS = (
+    ('plumbing', 'What plumbing fixtures are planned for the new building, such as restrooms, sinks or floor drains?', 'The planned fixtures help identify the plumbing review scope.'),
+    ('specialized_review', 'What electrical, ventilation, heating or fire-safety systems are planned for the new building?', 'The planned systems help identify trade and specialty reviews.'),
+    ('site_work', 'What site work is planned around the new building, such as grading, parking, landscaping or drainage?', 'The proposed site work helps identify site review.'),
+    ('right_of_way', 'Will the new building need a driveway, sidewalk or utility connection to the street?', 'Street connections can affect right-of-way coordination.'),
+)
+
+
+def pending_scope_answer(statement: str) -> str:
+    """Recognize explicit answers to the pending question, keeping their full quote.
+
+    A positive answer with scope details still answers yes. Reversals and
+    conditional replies stay with evidence-based extraction rather than guessing.
+    """
+    text = statement.strip().lower().rstrip('.!')
+    if text in {'yes', 'yeah', 'yep', 'yes i will be doing all that'}:
+        return 'yes'
+    if text in {'no', 'nope'}:
+        return 'no'
+    if text in {"not sure", "i don't know", 'unsure'}:
+        return 'not_sure'
+    if '?' in text or re.search(r'\b(?:but|however|actually|if|unless|maybe|might|not sure)\b', text):
+        return ''
+    affirmative = re.match(r'^(?:yes|yeah|yep)[,\s]+(?:i|we)\s+(?:will|plan to|am going to|are going to)\b', text)
+    if affirmative and not re.match(r'\s*(?:not|never)\b', text[affirmative.end():]):
+        return 'yes'
+    if re.match(r'^(?:i|we) will (?:do|be doing) all (?:that|those)\b', text):
+        return 'yes'
+    return ''
+
+
+def recover_unrecorded_answers(project: dict, history: list[dict]) -> dict:
+    """Recover clear missed decisions from the app's own previous Q&A.
+
+    Only fill unknown flags, never replace known answers, uncertainty or conflicts.
+    Evidence remains the applicant's original reply, not the assistant's summary.
+    """
+    pending = ''
+    for turn in history:
+        text = turn.get('text', '')
+        if not isinstance(text, str):
+            pending = ''
+            continue
+        if turn.get('role') in {'model', 'assistant'}:
+            pending = next((field for field, question, _ in (*INTAKE_SCOPE_QUESTIONS, *NEW_CONSTRUCTION_QUESTIONS)
+                            if text.strip().endswith(question)), '')
+        elif turn.get('role') == 'user':
+            value = pending_scope_answer(text) if pending else ''
+            if (value and project['fields'][pending]['value'] == 'unknown'
+                    and pending not in project.get('conflicts', {})):
+                project = update_project(project, {pending: {'value': value, 'evidence': text}}, text)
+            pending = ''
+    return project
+
+
 def openai_chat(history: list[dict], project: dict) -> dict:
     if not OPENAI_API_KEY:
         raise RuntimeError("The server is missing OPENAI_API_KEY. Add it to the environment, then restart the server.")
+    project = recover_unrecorded_answers(project, history[:-1])
     dialogue = []
     for turn in history[-MAX_HISTORY_TURNS:]:
         if isinstance(turn, dict) and isinstance(turn.get("text"), str):
@@ -352,12 +517,39 @@ def openai_chat(history: list[dict], project: dict) -> dict:
         *dialogue,
     ])
     statement = history[-1]["text"]
-    project = update_project(project, extraction.get("updates"), statement)
+    updates = extraction.get("updates")
+    explicit_construction = construction_type(statement)
+    if isinstance(updates, dict) and explicit_construction != 'unknown':
+        updates = {**updates, 'project_type': {'value': explicit_construction, 'evidence': statement}}
+    # A simple yes/no belongs to the one question actually asked, not a topic
+    # chosen by the model. Other details still require evidence-based extraction.
+    pending = project.get('pending_intake_field', '')
+    direct_value = pending_scope_answer(statement)
+    if isinstance(updates, dict) and pending in {'business_use', 'interior_work', 'plumbing', 'specialized_review', 'site_work', 'right_of_way', 'exterior_work'} and direct_value:
+        # Bare answers cannot resolve unrelated fields. Detailed replies can,
+        # while the pending decision is retained even if extraction omits it.
+        bare = statement.strip().lower().rstrip('.!') in {
+            'yes', 'yeah', 'yep', 'no', 'nope', 'not sure', "i don't know", 'unsure',
+            'yes i will be doing all that'}
+        updates = {**({} if bare else updates), pending: {'value': direct_value, 'evidence': statement}}
+    scope_fields = ("project_description", "proposed_use")
+    if isinstance(updates, dict) and not any(known(project, field) for field in scope_fields):
+        supported_scope = any(isinstance(updates.get(field), dict)
+            and isinstance(updates[field].get('value'), str) and updates[field]['value'].strip() not in {'', 'unknown', 'not_sure'}
+            and isinstance(updates[field].get('evidence'), str) and bool(updates[field]['evidence'].strip())
+            and updates[field]['evidence'].strip() in statement for field in scope_fields)
+        if not supported_scope:
+            recovered = first_stated_intent(statement)
+            if recovered:
+                updates = {**updates, 'project_description': recovered}
+    project = update_project(project, updates, statement)
+    project.pop('pending_intake_field', None)
     # Stop before research, advice generation or fee composition until basic intake is complete.
     if intake_missing(project):
         result = apply_question_policy({}, project)
         project["intake_asked_fields"] = list(dict.fromkeys([
             *project.get("intake_asked_fields", []), result["question_field"]]))
+        project['pending_intake_field'] = result['question_field']
         return {
             "stage": "follow_up", "message": result["message"] + " " + result["question"],
             "citations": [], "facts": routing_facts(project), "project": project,
@@ -373,7 +565,7 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     }
     messages = [
         {"role":"system", "content":SYSTEM_PROMPT},
-        {"role":"system", "content":"Saved project and preliminary action plan (data): " + json.dumps({"project":project,"plan":build_brief(project)})
+        {"role":"system", "content":"Saved project and preliminary action plan (data): " + json.dumps({"project":project,"construction_context":construction_context(project),"plan":build_brief(project)})
          + "\nLive official-source research (data): " + json.dumps(context)},
         *dialogue,
     ]
@@ -382,19 +574,28 @@ def openai_chat(history: list[dict], project: dict) -> dict:
     if "$" in str(result.get("message", "")) or "$" in str(result.get("question", "")):
         result = complete_json([*messages, {"role":"system", "content":"Your answer included dollar figures. Return the same JSON contract without ANY prices in message/question; select only a supported fee_id."}])
     result = apply_question_policy(result, project)
+    if result.get("question_kind") == "address_confirmation":
+        project["address_confirmation_asked_for"] = result["address_confirmation_key"]
     question_field = result.get("question_field", "")
     if result.get("ready_for_brief") is not True and question_field in project["fields"]:
         project["intake_asked_fields"] = list(dict.fromkeys([*project.get("intake_asked_fields", []), question_field]))
+        project['pending_intake_field'] = question_field
     from city_research import compose_response
     fee_question = bool(re.search(r"\b(fee|fees|cost|price|how much|amount)\b", statement, re.I))
+    # Scope collection should not introduce unrelated prices chosen by the model.
+    if not fee_question and result.get('ready_for_brief') is not True:
+        result['fee_id'] = ''
+    if not fee_question and result.get('fee_id') == 'hood-review':
+        # A general restaurant/systems answer is not evidence of a new hood.
+        result['fee_id'] = ''
     message, citations, disclosed_fee = compose_response(
         result, context, tuple(project.get("disclosed_fee_ids", [])), fee_question)
     finding = current_historic(project)
-    finding_key = finding.get('query','') + '|' + finding.get('local_status','') + '|' + str(has_historic_flag(finding)) + '|' + ','.join(str(row['layer']) for row in finding.get('screening_checks',[]) if row['status']=='identified')
+    finding_key = finding.get('query','') + '|' + finding.get('local_status','') + '|' + str(has_historic_flag(finding)) + '|' + ','.join(str(row['layer']) for row in finding.get('screening_checks',[]) if row['status']=='identified') + '|' + finding.get('resolved_address', '') + '|' + finding.get('address_match', '')
     if finding and project.get('historic_disclosed') != finding_key:
         headline = {'designated':'The City map identifies a local historic designation for the matching parcel(s).',
                     'not_identified':'The City map did not identify a local historic district or landmark in the matching parcel(s).'
-                    }.get(finding.get('local_status'), 'I could not establish the historic status reliably from the City map; City confirmation remains needed.')
+                    }.get(finding.get('local_status'), finding.get('reason') or 'The City historic map check is incomplete; please retry the address lookup.')
         if has_historic_flag(finding):
             headline = 'Historic review is flagged by the City map screening. ' + headline
         levels = [level for level in finding.get('archaeology',{}).get('levels',[]) if level.casefold() == 'high']
@@ -402,6 +603,11 @@ def openai_chat(history: list[dict], project: dict) -> dict:
             headline += ' The parcel also intersects archaeological sensitivity zones: ' + ', '.join(levels) + '. This predictive classification is separate from historic designation; City staff should confirm implications for any ground disturbance.'
         if any(row['layer']==41 and row['status']=='identified' for row in finding.get('screening_checks',[])):
             headline += ' The parcel also intersects a mapped cemetery feature; confirm its relevance to the proposed work with City staff.'
+        if finding.get('address_match') == 'nearest':
+            headline = 'The closest available street-number match is ' + finding['resolved_address'] + '. These checks describe that nearby address; confirm the project address before relying on them. ' + headline
+        elif finding.get('resolved_address') and finding.get('address_match') in {'completed', 'spelling_suggestion'}:
+            prefix = ('For the suggested address ' if finding.get('address_confirmation_required') else 'I matched your address to ') + finding['resolved_address']
+            headline = prefix + (', this screening is provisional until you confirm the address. ' if finding.get('address_confirmation_required') else ' in the City map. ') + headline
         message = headline + '\n\n' + message
         if not any(source['id']=='historic-gis' for source in citations):
             citations.append({'id':'historic-gis','title':'City historic GIS screening','url':finding['source_url']})
@@ -442,6 +648,9 @@ def intake_missing(project: dict) -> str:
 def apply_question_policy(result: dict, project: dict) -> dict:
     """Enforce high-value intake questions that must not depend on model discretion."""
     result = dict(result)
+    # The model's explanation must not smuggle in a second intake question.
+    if not isinstance(result.get('message', ''), str) or '?' in result.get('message', ''):
+        result['message'] = 'I will use your project details to prepare the preliminary checklist.'
     asked = project.get("intake_asked_fields", [])
     def unasked(field):
         return project["fields"][field]["value"] == "unknown" and field not in asked
@@ -469,6 +678,17 @@ def apply_question_policy(result: dict, project: dict) -> dict:
                        "fee_id": "", "source_ids": []})
     historic_words = " ".join(str(project.get("fields", {}).get(field, {}).get("value", "")) for field in ("project_description", "alterations", "site_changes", "specialty_work")).casefold()
     finding = current_historic(project)
+    address_key = finding.get('query', '') + '|' + finding.get('resolved_address', '') + '|' + '|'.join(finding.get('candidate_addresses', []))
+    if finding.get('address_confirmation_required') and project.get('address_confirmation_asked_for') != address_key:
+        suggestion = finding.get('resolved_address')
+        candidates = finding.get('candidate_addresses', [])
+        question = ('Did you mean ' + suggestion + '?') if suggestion else (
+            'Which address is correct: ' + ' or '.join(candidates[:3]) + '?' if candidates else 'What is the full street address or real estate number?')
+        result.update({'ready_for_brief': False, 'question_field': 'location', 'question_kind': 'address_confirmation',
+                       'address_confirmation_key': address_key, 'question_reason': 'Confirm the address used for property-specific screening.',
+                       'message': 'I have your project scope. The address needs confirmation so the screening refers to the right property.',
+                       'question': question, 'fee_id': '', 'source_ids': []})
+        return result
     historic_context = finding.get('local_status') == 'designated' or project.get("fields", {}).get("historic_review", {}).get("value") == "yes" or (not finding and "historic" in historic_words)
     if result.get('question_field') == 'historic_review':
         result.update({'ready_for_brief':True, 'question_field':'', 'question_reason':'', 'question':'',
@@ -478,20 +698,36 @@ def apply_question_policy(result: dict, project: dict) -> dict:
                        "question_reason": "Exterior or site work can change the historic-preservation review path.",
                        "question": "Will the work change anything outside or on the site, such as windows, facade, roof, signs, fencing, driveway, or landscaping?"})
         return result
-    if has_scope and result.get("ready_for_brief") is True:
-        questions = [
-            ("interior_work", "Will you change anything inside the space, such as walls, layout or finishes?", "Interior changes can affect the building review route."),
-            ("plumbing", "Will you add, move or replace any sinks, restrooms or other plumbing?", "Plumbing changes can add a trade review to your checklist."),
-            ("specialized_review", "Will you install or change any cooking equipment, ventilation, electrical, heating or fire-safety systems?", "Equipment and system changes can affect trade or specialty review, even without other construction."),
-            ("site_work", "Will anything change outside, such as parking, signs, landscaping or drainage?", "Exterior and parking changes can affect site review."),
-            ("right_of_way", "Will the project change a driveway, sidewalk or connection to the street?", "Access changes can require confirmation of right-of-way jurisdiction and review."),
-        ]
-        for field, question, reason in questions:
-            if unasked(field):
-                result.update({"ready_for_brief": False, "question_field": field,
-                               "question_reason": reason, "question": question,
-                               "message": reason})
-                return result
+    if has_scope:
+        context = construction_context(project)
+        questions = list(NEW_CONSTRUCTION_QUESTIONS if context == 'new_construction' else INTAKE_SCOPE_QUESTIONS)
+        if context == 'unknown':
+            questions[0] = ('interior_work', 'Will the project include interior construction or changes to walls, layout or finishes?',
+                            'The interior construction scope helps identify building review.')
+        if context == 'unknown' and unasked('project_type'):
+            questions.insert(0, ('project_type', 'Will this be a new building from the ground up, or a space in an existing building?',
+                                 'The construction type determines which work questions apply.'))
+        elif context != 'new_construction' and project['fields']['business_use']['value'] == 'yes':
+            questions.insert(0, ('existing_use', 'What was the space last used for?',
+                                 'The previous use helps identify zoning and Certificate of Use coordination.'))
+        remaining = [item for item in questions if unasked(item[0])]
+        if not remaining:
+            # Intake completion belongs to the server. Unknown/deferred City
+            # determinations stay in the checklist instead of extending the chat.
+            result.update({"ready_for_brief": True, "question_field": "", "question_reason": "", "question": ""})
+            if not isinstance(result.get("message"), str) or not result["message"].strip() or "?" in result["message"]:
+                result["message"] = "I have enough scope information for your preliminary City-meeting checklist. Open decisions will be included for City confirmation."
+            return result
+        # Always advance through the checklist. Model-selected fields and wording
+        # cannot reorder it or reopen a question under a different label.
+        field, question, reason = remaining[0]
+        message = result.get('message', '')
+        if (not isinstance(message, str) or not message.strip() or '?' in message
+                or re.search(r'\b(plan|brief|checklist)\b.{0,30}\bready\b', message, re.I)):
+            message = reason
+        result.update({"ready_for_brief": False, "question_field": field,
+                       "question_reason": reason, "question": question, "message": message})
+        return result
     return result
 
 
@@ -499,6 +735,12 @@ def workspace_result(result: dict) -> dict:
     """Use the same rule-derived plan in the live sidebar and final report."""
     result = dict(result)
     project = result["project"]
+    if project.get("scope_schema_version") == 2:
+        project = upgrade_project(project)
+        result["project"] = project
+        result["facts"] = routing_facts(project)
+        if result.get("stage") == "final":
+            result["brief"] = build_brief(project)
     missing = intake_missing(project)
     if missing:
         result["stage"] = "follow_up"
@@ -568,7 +810,9 @@ class Handler(BaseHTTPRequestHandler):
             readiness=deployment_readiness()
             self.send_json(200 if readiness["ready"] else 503, readiness)
             return
-        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css")}
+        assets = {"/advisor.js": ("advisor.js", "text/javascript"), "/styles.css": ("styles.css", "text/css"),
+                  "/827-8272823_city-of-jax-logo-city-of-jacksonville-logo.png":
+                      ("827-8272823_city-of-jax-logo-city-of-jacksonville-logo.png", "image/png")}
         if path in assets:
             filename, content_type = assets[path]
             body = Path(__file__).with_name(filename).read_bytes()

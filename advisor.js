@@ -24,6 +24,89 @@ function setView(view) {
 document.querySelectorAll('.mobile-switch button').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
 document.querySelector('#restart').addEventListener('click', resetProject);
 
+const feedbackDialog = document.querySelector('#feedback-dialog');
+const feedbackForm = document.querySelector('#feedback-form');
+const feedbackRecipient = document.querySelector('#feedback-recipient');
+feedbackRecipient.defaultValue = window.PILOT_FEEDBACK_EMAIL || '';
+let feedbackDraftBody = '';
+let feedbackNeedsPaste = false;
+let feedbackCopied = false;
+
+function clearFeedbackDraft() {
+  document.querySelector('#feedback-review').hidden = true;
+  document.querySelector('#feedback-preview').value = '';
+  document.querySelector('#feedback-open').removeAttribute('href');
+  document.querySelector('#feedback-copy').hidden = true;
+  feedbackDraftBody = ''; feedbackNeedsPaste = false; feedbackCopied = false;
+}
+function openPilotFeedback() {
+  if (pending) return;
+  clearFeedbackDraft();
+  feedbackDialog.showModal();
+  document.querySelector('#feedback-comments').focus();
+}
+function pilotFeedbackBody(comments) {
+  const turns = [...chat.querySelectorAll(':scope > .bubble:not(.pending)')].map((bubble, index) => {
+    const copy = bubble.cloneNode(true);
+    copy.querySelector('.message-sources')?.remove();
+    const sources = [...bubble.querySelectorAll('.message-sources a')].map(source => `${source.textContent}: ${source.href}`);
+    const role = bubble.classList.contains('user') ? 'Tester' : bubble.classList.contains('error') ? 'App error' : 'Advisor';
+    return `${index + 1}. ${role}\n${copy.textContent.trim()}` + (sources.length ? '\nSources:\n' + sources.join('\n') : '');
+  });
+  const location = currentProject?.fields?.location?.value;
+  const checklist = currentBrief ? ['', 'Current checklist', currentBrief.project_summary,
+    ...currentBrief.action_plan.map(step => [
+      checklistTitle(step) + ': ' + (step.status === 'not_applicable' ? 'Not included in reported scope' : checklistStatus(step)),
+      step.request, ...(step.evidence || []).map(evidence => 'Evidence: ' + evidence),
+      step.source_title + ': ' + step.source_url].join('\n'))] : [];
+  return ['Feedback City Pilot', `Prepared: ${new Date().toISOString()}`,
+    ...(location && !['unknown', 'not_sure'].includes(location) ? [`Project location: ${location}`] : []),
+    '', 'Tester comments', comments.trim() || '(No comments added)', '', 'Full conversation history',
+    turns.join('\n\n') || '(No conversation yet)', ...checklist].join('\n');
+}
+document.querySelector('#pilot-feedback').addEventListener('click', openPilotFeedback);
+document.querySelector('#feedback-close').addEventListener('click', () => feedbackDialog.close());
+feedbackForm.addEventListener('input', clearFeedbackDraft);
+document.querySelector('#feedback-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(feedbackDraftBody);
+    feedbackCopied = true;
+    document.querySelector('#feedback-status').textContent = 'Full feedback copied. Open Outlook, paste it into the message body, then click Send.';
+    document.querySelector('#feedback-open').focus();
+  } catch {
+    const preview = document.querySelector('#feedback-preview');
+    preview.focus(); preview.select();
+    document.querySelector('#feedback-status').textContent = 'Automatic copy is unavailable. Copy the selected feedback with Ctrl+C (or Copy on mobile), then open Outlook, paste it into the message body, and click Send.';
+    feedbackCopied = true;
+  }
+});
+document.querySelector('#feedback-open').addEventListener('click', event => {
+  if (feedbackNeedsPaste && !feedbackCopied) {
+    event.preventDefault();
+    document.querySelector('#feedback-status').textContent = 'First copy the full feedback. Then open Outlook, paste it into the message body, and click Send.';
+    document.querySelector('#feedback-copy').focus();
+  }
+});
+feedbackForm.onsubmit = event => {
+  event.preventDefault();
+  if (!feedbackForm.reportValidity()) return;
+  clearFeedbackDraft();
+  const recipient = feedbackRecipient.value.trim();
+  const body = pilotFeedbackBody(document.querySelector('#feedback-comments').value);
+  feedbackDraftBody = body;
+  document.querySelector('#feedback-preview').value = body;
+  const base = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(recipient)}&subject=${encodeURIComponent('Feedback City Pilot')}`;
+  const withBody = `${base}&body=${encodeURIComponent(body)}`;
+  feedbackNeedsPaste = withBody.length > 1800;
+  const open = document.querySelector('#feedback-open');
+  open.href = feedbackNeedsPaste ? base : withBody;
+  document.querySelector('#feedback-copy').hidden = !feedbackNeedsPaste;
+  document.querySelector('#feedback-status').textContent = feedbackNeedsPaste
+    ? 'Copy the full feedback, open Outlook, paste it into the message body, then click Send. The recipient and subject are filled in for you.'
+    : 'Open Outlook to review the email addressed to ' + recipient + ', then click Send.';
+  document.querySelector('#feedback-review').hidden = false;
+};
+
 function renderWorkspace(result = {}) {
   const historicResult = document.querySelector('#historic-result');
   const historicExpanded = historicResult.querySelector('details')?.open || false;
@@ -119,6 +202,7 @@ function link(text, url) {
   return el;
 }
 function checklistTitle(step) {
+  if (step.id === 'occupancy' && step.construction_context === 'new_construction') return 'New-building occupancy review';
   const titles = {use:'Zoning & Certificate of Use (COU)', occupancy:'Occupancy & converting-use review',
     building:'Building permit', plumbing:'Plumbing permit', site:'Site development & parking',
     row:'Right-of-way & access', specialty:'Specialty & agency review', historic:'Historic preservation',
@@ -163,6 +247,8 @@ function historicCard(expanded = false) {
   if (!finding || finding.query !== currentProject?.fields?.location?.value) return null;
   const card = node('section', '', 'historic-card');
   card.append(node('h3', 'Historic & archaeological checks'));
+  if (finding.resolved_address) card.append(node('p', (finding.address_match === 'nearest' ? 'Closest street-number match: ' : finding.address_confirmation_required ? 'Suggested address: ' : 'Screened address: ') + finding.resolved_address));
+  if (finding.address_confirmation_required) card.append(node('p', 'Confirm the address before relying on these location-specific results.'));
   const historicFlag = finding.historic_flag || finding.local_status === 'designated' || finding.screening_checks?.some(check => check.status === 'identified') || finding.archaeology?.levels?.some(level => level.toLowerCase() === 'high');
   card.append(node('strong', historicFlag ? 'Historic review: Flagged' : finding.historic_status === 'not_identified' ? 'Historic review: No flags identified' : 'Historic review: Check details'));
   card.append(node('strong', {designated:'Local historic designation identified', not_identified:'No local historic designation identified'}[finding.local_status] || 'Historic status needs confirmation'));
@@ -271,7 +357,8 @@ function renderBrief(brief) {
   const actions = node('div', '', 'output-actions');
   const print = node('button', 'Print or save as PDF', 'secondary-action'); print.type='button'; print.onclick=()=>window.print();
   const restart = node('button', 'Start another project', 'secondary-action'); restart.type='button'; restart.onclick=resetProject;
-  actions.append(print,restart); article.append(actions);
+  const feedback = node('button', 'Email pilot feedback', 'secondary-action'); feedback.type='button'; feedback.onclick=openPilotFeedback;
+  actions.append(print,feedback,restart); article.append(actions);
   if (steps.length) coordinationForm(article, brief);
   chat.append(article);
 }
@@ -331,6 +418,7 @@ function coordinationForm(container, brief) {
 }
 function resetProject() {
   if(pending)return;
+  feedbackDialog.close(); feedbackForm.reset(); clearFeedbackDraft();
   projectId=''; demoState=''; currentProject=null; currentBrief=null;
   previousSteps = new Map(); renderWorkspace(); setView('chat');
   if (persistentMode) sessionStorage.removeItem('jax-project-id');
@@ -341,6 +429,7 @@ form.onsubmit=async event=>{
   event.preventDefault(); const message=input.value.trim(); if(!message || pending)return;
   input.value='';
   pending=true; send.disabled=true; input.disabled=true; send.textContent='Thinking…';
+  document.querySelector('#pilot-feedback').disabled=true;
   document.querySelector('#restart').disabled=true;
   chat.setAttribute('aria-busy', 'true');
   const user=bubble(message,'user'); const loading=bubble('Thinking through your project…'); loading.classList.add('pending');
@@ -364,7 +453,7 @@ form.onsubmit=async event=>{
       chat.querySelector('.brief').scrollIntoView({behavior:'smooth',block:'start'});
     } else user.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){input.value=message;loading.remove();user.remove();bubble(err.message + ' Your reply is still below so you can retry.','error');}
-  finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';document.querySelector('#restart').disabled=false;chat.setAttribute('aria-busy','false');input.focus({preventScroll:true});}
+  finally{pending=false;send.disabled=false;input.disabled=false;send.textContent='Send';document.querySelector('#restart').disabled=false;document.querySelector('#pilot-feedback').disabled=false;chat.setAttribute('aria-busy','false');input.focus({preventScroll:true});}
 };
 input.maxLength=6000;
 input.addEventListener('keydown',event=>{

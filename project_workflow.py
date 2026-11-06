@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from historic_gis import current_historic, has_historic_flag
 
@@ -29,6 +30,16 @@ def upgrade_project(previous: dict) -> dict:
     record.update(copy.deepcopy(previous))
     record["fields"] = {**empty_project()["fields"], **record["fields"]}
     record["disclosed_fee_ids"] = [value for value in record.get("disclosed_fee_ids", []) if isinstance(value, str)]
+    if record.get("scope_schema_version") == 2:
+        # Remove the reverted review's extra fields and narrative conflicts from
+        # existing sessions, retaining the original applicant fields and facts.
+        record["fields"] = {key: record["fields"][key] for key in empty_project()["fields"]}
+        record["conflicts"] = {key: value for key, value in record["conflicts"].items() if key in FACT_KEYS}
+        record["corrections"] = [item for item in record["corrections"]
+            if item.get("field") in record["fields"] and item.get("evidence") != "Scope changed; this dependent detail needs confirmation."]
+        record["intake_asked_fields"] = [key for key in record.get("intake_asked_fields", []) if key in record["fields"]]
+        for key in ("scope_schema_version", "derived_scope", "scope_conflicts", "pending_question", "property_disclosed"):
+            record.pop(key, None)
     return record
 
 
@@ -65,12 +76,41 @@ def update_project(previous: dict, updates: object, statement: str) -> dict:
             project["conflicts"].pop(key, None)
         support = [] if differs else old["evidence"]
         project["fields"][key] = {"value": value, "evidence": list(dict.fromkeys([*support, evidence]))[-8:]}
+        if key == "location" and old["value"] != value:
+            project.pop("research", None)
+            project.pop("historic_disclosed", None)
+            project.pop("address_confirmation_asked_for", None)
     project["revision"] += 1
     return project
 
 
+def construction_type(text: str) -> str:
+    """Recognize explicit construction scope, not a new business or new lease."""
+    text = re.sub(r'\bne+w+\b', 'new', text.casefold()).replace('_', ' ')
+    if re.search(r"\b(?:if|maybe|might|undecided|not sure|don't know)\b", text):
+        return 'unknown'
+    if not re.search(r'\b(?:not|no)\b[^.;,]{0,25}\b(?:new (?:building|construction|structure)|ground[ -]+up)\b', text):
+        if re.search(r'\b(?:ground[ -]+up|new (?:building|construction|structure))\b', text):
+            return 'new_construction'
+    if re.search(r'\b(?:existing (?:building|space)|renovat\w*|remodel\w*|tenant build[ -]?out)\b', text):
+        return 'existing_building'
+    return 'unknown'
+
+
+def construction_context(project: dict) -> str:
+    for field in ('project_type', 'project_description'):
+        context = construction_type(project['fields'][field]['value'])
+        if context != 'unknown':
+            return context
+    return 'unknown'
+
+
 def routing_facts(project: dict) -> dict:
     facts = {key: "not_sure" if key in project["conflicts"] else project["fields"][key]["value"] for key in FACT_KEYS}
+    if construction_context(project) == 'new_construction' and 'interior_work' not in project['conflicts']:
+        # The building route covers new construction as well as interior work.
+        # Keep the applicant's interior-work answer intact in the saved record.
+        facts['interior_work'] = 'yes'
     finding = current_historic(project)
     if finding:
         mapped = {'designated':'yes','not_identified':'no'}.get(finding.get('local_status'), 'not_sure')
@@ -95,7 +135,11 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
         ("historic", "Historic preservation", ("historic_review", "exterior_work"), ("historic_review",), True),
     ]
     topics = []
-    fields = {**project["fields"], 'historic_review':{**project["fields"]['historic_review'], 'value':routing_facts(project)['historic_review']}}
+    facts = routing_facts(project)
+    fields = {**project["fields"],
+              'historic_review':{**project["fields"]['historic_review'], 'value':facts['historic_review']},
+              'interior_work':{**project["fields"]['interior_work'], 'value':facts['interior_work']}}
+    new_building = construction_context(project) == 'new_construction'
     conflicts = project.get("conflicts", {})
     for identifier, title, keys, decisions, optional in definitions:
         values = [fields[key]["value"] for key in keys]
@@ -106,7 +150,9 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
         if decisions:
             covered = all(fields[key]["value"] in {"yes", "no"} for key in decisions)
             if identifier == "use" and fields["business_use"]["value"] == "yes":
-                covered = covered and all(fields[key]["value"] not in {"unknown", "not_sure", ""} for key in ("existing_use", "proposed_use"))
+                covered = covered and (any(fields[key]['value'] not in {'unknown', 'not_sure', ''}
+                    for key in ('proposed_use', 'project_description')) if new_building else
+                    all(fields[key]["value"] not in {"unknown", "not_sure", ""} for key in ("existing_use", "proposed_use")))
             excluded = all(fields[key]["value"] == "no" for key in decisions)
         else:
             covered = any(value not in {"unknown", "not_sure", ""} for value in values)
@@ -118,7 +164,7 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
             explanations = {
                 "project": "The project scope still needs confirmation.",
                 "location": "Location has not been established; address-specific checks remain open.",
-                "use": "Existing use, proposed use or use eligibility still needs confirmation.",
+                "use": "Proposed use or use eligibility still needs confirmation." if new_building else "Existing use, proposed use or use eligibility still needs confirmation.",
                 "building": "Unresolved building, plumbing or occupancy details remain in the preliminary plan for City confirmation.",
                 "specialty": "Equipment, trade or fire-review applicability has not been established.",
                 "site": "Site, parking or street-access scope still needs confirmation.",
@@ -140,6 +186,8 @@ def project_summary(project: dict) -> str:
         description = f"Proposed change from {existing} to {proposed}." if existing and proposed else (
             f"Proposed project: {proposed}." if proposed else "The project scope still needs clarification.")
     parts = [description]
+    if construction_context(project) == 'new_construction':
+        parts.append('Construction: new building from the ground up.')
     if get("location"):
         parts.append("Location: " + get("location") + ".")
     elif fields["location"]["value"] == "not_sure":
@@ -186,6 +234,8 @@ def build_brief(project: dict) -> dict:
         if finding:
             if value == 'yes' and project['fields']['exterior_work']['value'] not in {'yes','no'}:
                 status = 'unresolved'
+            if finding.get('address_confirmation_required'):
+                status = 'unresolved'
             exception_note = (exception_note + ' ' + finding['reason']).strip()
         prerequisites = ["use"] if rule["id"] in {"occupancy", "building", "plumbing"} and facts["business_use"] != "no" else []
         title = rule["title"]
@@ -197,6 +247,17 @@ def build_brief(project: dict) -> dict:
                       "exception_note": exception_note,
                       "evidence_label": 'City GIS' if finding else 'You shared',
                       "rule_version": RULE_BASE["version"]})
+        if construction_context(project) == 'new_construction':
+            if rule['id'] == 'building':
+                steps[-1].update({'request': 'Could you confirm the building permit route and drawings needed for the proposed new building?',
+                                 'evidence': project['fields']['project_type']['evidence'] or project['fields']['project_description']['evidence'],
+                                 'exceptions': 'New construction is reported; City staff confirm the applicable submission and review requirements.'})
+            elif rule['id'] == 'occupancy':
+                steps[-1].update({'title': 'Confirm occupancy classification for the new building',
+                                 'construction_context': 'new_construction',
+                                 'request': 'Could you confirm the occupancy classification and related plans needed for the proposed new building and activity?',
+                                 'guidance': 'Confirm the occupancy classification for the proposed activity in the new building with City staff.',
+                                 'exceptions': 'A new business does not establish the technical occupancy classification.'})
     historic = current_historic(project)
     levels = historic.get('archaeology',{}).get('levels',[])
     if any(level.casefold() == 'high' for level in levels):
@@ -206,7 +267,9 @@ def build_brief(project: dict) -> dict:
             'request':'If this project involves ground disturbance, could you confirm whether the mapped archaeological sensitivity calls for coordination or further screening?',
             'outcome':'City confirmation of whether the proposed ground disturbance needs archaeological coordination',
             'prerequisites':[],'prerequisite_basis':'Scope-dependent City confirmation; no universal permit prerequisite is established.',
-            'evidence':['City GIS archaeological sensitivity: High'],'evidence_label':'City GIS',
+            'evidence':['City GIS archaeological sensitivity: High' + (
+                ' at suggested address ' + historic.get('resolved_address', '') + ' (address not confirmed)'
+                if historic.get('address_confirmation_required') else '')],'evidence_label':'City GIS',
             'source_title':'City GIS layer information: Archaeological Sensitivity predictive model',
             'source_url':historic['archaeology']['source_url'],
             'guidance':'The mapped predictive sensitivity should be discussed with City staff if work will disturb soil.',

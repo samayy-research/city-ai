@@ -90,10 +90,52 @@ window.addEventListener('load',async()=>{
   const check=(ok,message)=>{if(!ok)throw Error(message);};
   try {
     const composer=document.querySelector('#form'), reply=document.querySelector('#message');
+    let copiedFeedback='';
+    const clipboardDescriptor=Object.getOwnPropertyDescriptor(navigator,'clipboard');
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{copiedFeedback=value;}}});
+    document.querySelector('#pilot-feedback').click();
+    check(document.querySelector('#feedback-dialog').open,'Pilot feedback opens from the conversation header');
+    document.querySelector('#feedback-recipient').value='pilot-review@example.com';
+    document.querySelector('#feedback-comments').value='Useful pilot — café 🙂';
+    document.querySelector('#feedback-form').onsubmit({preventDefault(){}});
+    check(document.querySelector('#feedback-preview').value.includes('Hi — tell me'),'Feedback includes the initial greeting');
+    check(decodeURIComponent(document.querySelector('#feedback-open').href).includes('subject=Feedback City Pilot'),'Pilot feedback has a fixed subject');
+    const shortDraft=new URL(document.querySelector('#feedback-open').href);
+    check(shortDraft.origin==='https://outlook.office.com','Feedback opens Outlook in the browser');
+    check(shortDraft.searchParams.get('to')==='pilot-review@example.com','Outlook draft has the feedback recipient');
+    check(shortDraft.searchParams.get('body').includes('Useful pilot — café 🙂'),'Outlook draft preserves Unicode feedback');
+    check(!document.querySelector('#feedback-download'),'Pilot feedback never requires downloading a file');
+    document.querySelector('#feedback-close').click();
     reply.value='I am converting an office to a restaurant.';
     await composer.onsubmit({preventDefault(){}});
     check(document.querySelectorAll('.bubble.assistant').length===2,'Follow-up must be one message');
     check(!document.querySelector('.brief'),'First turn should ask a question');
+    document.querySelector('#pilot-feedback').click();
+    document.querySelector('#feedback-comments').value='Long feedback ' + 'detailed comments 🙂 '.repeat(1000);
+    document.querySelector('#feedback-form').onsubmit({preventDefault(){}});
+    const feedbackPreview=document.querySelector('#feedback-preview').value;
+    check(feedbackPreview.includes('I am converting an office to a restaurant.'),'Feedback includes the user reply');
+    check(feedbackPreview.includes('What work are you planning inside'),'Feedback includes the advisor reply');
+    check(feedbackPreview.includes('https://maps.coj.net/'),'Feedback includes conversation source URLs');
+    check(!feedbackPreview.includes('Thinking through your project'),'Feedback excludes temporary loading messages');
+    check(!document.querySelector('#feedback-open').hidden,'Long conversations can still open Outlook');
+    check(!document.querySelector('#feedback-copy').hidden,'Long conversations provide full feedback copying');
+    check(!new URL(document.querySelector('#feedback-open').href).searchParams.has('body'),'Long conversation is not truncated into a browser URL');
+    const prevented=!document.querySelector('#feedback-open').dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+    check(prevented,'Long feedback asks the reviewer to copy the full email before opening Outlook');
+    document.querySelector('#feedback-copy').click();
+    await new Promise(resolve=>setTimeout(resolve,0));
+    check(copiedFeedback===feedbackPreview,'Clipboard receives the complete untruncated feedback');
+    check(document.querySelector('#feedback-status').textContent.includes('then click Send'),'Explain the final Send action');
+    navigator.clipboard.writeText=async()=>{throw Error('Clipboard denied');};
+    document.querySelector('#feedback-copy').click();
+    await new Promise(resolve=>setTimeout(resolve,0));
+    check(document.querySelector('#feedback-preview').selectionEnd===feedbackPreview.length,'Blocked clipboard access selects the full feedback for manual copy');
+    check(document.querySelector('#feedback-status').textContent.includes('Automatic copy is unavailable'),'Clipboard failure is explained');
+    document.querySelector('#feedback-comments').dispatchEvent(new Event('input',{bubbles:true}));
+    check(document.querySelector('#feedback-review').hidden,'Editing comments invalidates the old draft');
+    document.querySelector('#feedback-close').click();
+    if(clipboardDescriptor)Object.defineProperty(navigator,'clipboard',clipboardDescriptor);else delete navigator.clipboard;
     check(document.querySelector('.topic.active strong').textContent==='Building & plumbing','Highlight the current question topic');
     check(document.querySelectorAll('.live-step').length > 0,'Build the sidebar before the final brief');
     check(document.querySelector('#progress-label').textContent.startsWith('4 of'),'Count supported topics, including the GIS finding');
@@ -146,6 +188,7 @@ window.addEventListener('load',async()=>{
     detail.open=false;
     const email=document.querySelector('.coordination-form');
     check(document.querySelector('.email-section').textContent.includes('specific questions for the department you select'),'Explain the purpose of the email draft');
+    check(pilotFeedbackBody('').includes('Current checklist'),'Pilot feedback includes the resulting checklist as well as the conversation');
     email.elements.applicantName.value='Test Applicant';
     email.elements.applicantEmail.value='applicant@example.com';
     await email.onsubmit({preventDefault(){}});
@@ -192,6 +235,8 @@ window.addEventListener('load',async()=>{
     check(!document.querySelector('#historic-result .historic-card'),'Restart clears the historic finding');
     check(document.querySelectorAll('.live-step').length===0,'Restart clears live checklist');
     check(document.querySelector('#intake-progress').value===0,'Restart clears topic coverage');
+    check(document.querySelector('#feedback-comments').value==='','Restart clears feedback from the prior conversation');
+    check(!pilotFeedbackBody('').includes('I am converting an office'),'Feedback cannot leak the previous conversation after reset');
     currentProject=window.__preview.project;
     renderWorkspace(window.__preview);
     renderBrief(window.__preview.brief);
@@ -225,6 +270,7 @@ def fake_model(history, project):
         'screening_checks':[{'layer':key,'title':name+' (High only)' if key==40 else name,'status':'identified' if key in (40,43) else 'not_identified','complete':True} for key,name in LAYERS.items()],
         'parcels':[{'parcel':'073753 0000','checks':[{'matches':[{'LANDMARK_N':'St. James Building'}]}]}]}}
     return app.workspace_result({"stage":"final" if ready else "follow_up", "message":answer, "project":updated,
+            "citations":[{"id":"historic-gis","title":"City historic GIS screening","url":"https://maps.coj.net/landdevelopmentreview/"}],
             "question_field":"interior_work" if not ready else "", "question_reason":"The proposed work helps identify the building review route." if not ready else "",
             "facts":routing_facts(updated), "brief":build_brief(updated) if ready else None})
 

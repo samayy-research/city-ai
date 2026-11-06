@@ -296,7 +296,7 @@ class StateAndApiTests(unittest.TestCase):
 
 class IntakeProgressTests(unittest.TestCase):
     def test_plan_waits_for_unreported_work_even_when_model_is_ready(self):
-        record = project({"project_description":"restaurant replacing an office with no planned alterations", "location":"701 San Marco", "interior_work":"no", "cooking_method":"warmed packaged food"})
+        record = project({"project_type":"existing_building", "project_description":"restaurant replacing an office with no planned alterations", "location":"701 San Marco", "interior_work":"no", "cooking_method":"warmed packaged food"})
         result = app.apply_question_policy({"ready_for_brief":True, "message":"Your plan is ready."}, record)
         self.assertFalse(result["ready_for_brief"])
         self.assertEqual(result["question_field"], "plumbing")
@@ -304,13 +304,13 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertNotIn("plan is ready", result["message"])
 
     def test_policy_does_not_repeat_asked_fields_or_explicit_uncertainty(self):
-        record = project({"project_description":"restaurant", "location":"not_sure", "interior_work":"no", "plumbing":"not_sure", "specialized_review":"no", "site_work":"no"})
+        record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"not_sure", "interior_work":"no", "plumbing":"not_sure", "specialized_review":"no", "site_work":"no"})
         record["intake_asked_fields"] = ["right_of_way"]
         result = app.apply_question_policy({"ready_for_brief":True}, record)
         self.assertTrue(result["ready_for_brief"])
 
     def test_unknown_site_scope_gets_a_plain_language_followup(self):
-        record = project({"project_description":"restaurant", "location":"701 San Marco", "interior_work":"no", "plumbing":"no", "specialized_review":"no"})
+        record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"701 San Marco", "interior_work":"no", "plumbing":"no", "specialized_review":"no"})
         result = app.apply_question_policy({"ready_for_brief":True}, record)
         self.assertEqual(result["question_field"], "site_work")
         self.assertIn("parking", result["question"])
@@ -324,7 +324,7 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertTrue(all(topic["reason"] for topic in open_topics))
 
     def test_provider_followup_is_remembered_and_not_asked_again(self):
-        record = project({"project_description":"restaurant", "location":"701 San Marco", "interior_work":"no"})
+        record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"701 San Marco", "interior_work":"no"})
         with patch.object(app, "OPENAI_API_KEY", "test"), patch.object(app, "complete_json", side_effect=[{"updates":{}}, {"ready_for_brief":True, "message":"Your plan is ready.", "source_ids":[]}]), patch.object(app, "research_context", return_value={"sources":[], "fees":[], "property":{"status":"needs_address"}}):
             result = app.openai_chat([{"role":"user", "text":"Please continue."}], record)
         self.assertEqual(result["stage"], "follow_up")
