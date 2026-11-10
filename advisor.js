@@ -187,11 +187,12 @@ function bubble(text, kind = 'assistant', citations = []) {
   return el;
 }
 function contact(group) {
+  if (group.startsWith('Jacksonville Fire') || group.startsWith('Fire')) return {email:'JohnsonC@coj.net',url:'https://www.jacksonville.gov/departments/fire-and-rescue'};
   if (group.startsWith('Historic')) return {email:'HistoricPreservation@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/community-planning-division/historic-preservation-section'};
-  if (group.startsWith('Concurrency')) return {email:'CMMSO@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/transportation-planning/concurrency-and-mobility-management-system-office'};
-  if (group.startsWith('Zoning')) return {email:'Zoning@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division/zoning-section'};
-  if (group.startsWith('Development')) return {email:'ReviewGrp@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division'};
-  return {email:'BIDDocuments@coj.net', url:'https://www.jacksonville.gov/departments/public-works/building-inspection-division/contact-us'};
+  if (group.startsWith('Concurrency')) return {email:'KimberlyG@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/transportation-planning/concurrency-and-mobility-management-system-office'};
+  if (group.startsWith('Zoning')) return {email:'RMullaly@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division/zoning-section'};
+  if (group.startsWith('Development')) return {email:'GSample@coj.net', url:'https://www.jacksonville.gov/departments/public-works/development-services-division'};
+  return {email:'LyonA@coj.net', url:'https://www.jacksonville.gov/departments/public-works/building-inspection-division/contact-us'};
 }
 function link(text, url) {
   const el = node('a', text, 'contact-source');

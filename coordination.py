@@ -14,10 +14,11 @@ from project_workflow import build_brief, email_draft
 
 DEPARTMENT_EMAILS = {
     "Historic Preservation Section": "HistoricPreservation@coj.net",
-    "Zoning / Certificate of Use (COU)": "Zoning@coj.net",
-    "Building Inspection Division / Permit Coordinator": "BIDDocuments@coj.net",
-    "Development Services (site and civil review)": "ReviewGrp@coj.net",
-    "Concurrency and Mobility Management System Office (CMMSO)": "CMMSO@coj.net",
+    "Zoning / Certificate of Use (COU)": "RMullaly@coj.net",
+    "Building Inspection Division / Permit Coordinator": "LyonA@coj.net",
+    "Jacksonville Fire & Rescue — Plan Review": "JohnsonC@coj.net",
+    "Development Services (site and civil review)": "GSample@coj.net",
+    "Concurrency and Mobility Management System Office (CMMSO)": "KimberlyG@coj.net",
 }
 
 

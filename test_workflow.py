@@ -253,7 +253,7 @@ class StateAndApiTests(unittest.TestCase):
         with patch.object(coordination, "verify_turnstile", return_value=True):
             result=coordination.prepare_coordination({"projectId":identifier, "name":"Applicant", "email":"applicant@example.com", "team":"Zoning / Certificate of Use (COU)",
                 "turnstileToken":"test", "recipient":"unrelated@coj.net", "checklist":"unrelated confidential dump", "route":"invented"}, "127.0.0.1")
-        self.assertTrue(result["mailtoUrl"].startswith("mailto:Zoning%40coj.net?"))
+        self.assertTrue(result["mailtoUrl"].startswith("mailto:RMullaly%40coj.net?"))
         self.assertNotIn("unrelated", result["body"])
         self.assertIn("restaurant", result["body"])
 
