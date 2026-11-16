@@ -1,5 +1,6 @@
 """Demo continuity and email preparation without database or browser persistence."""
 import json
+import copy
 import os
 import unittest
 from unittest.mock import patch
@@ -63,6 +64,47 @@ class DemoTests(unittest.TestCase):
         with patch.object(app,'complete_json',side_effect=[extraction,reply]),patch.object(app,'research_context',return_value={'sources':[],'fees':[],'property':{}}) as research:
             app.openai_chat([{'role':'user','text':'A restaurant'}],project)
         self.assertFalse(research.call_args.kwargs['cache_property'])
+
+    def test_email_summary_context_resources_and_routing_are_independent(self):
+        project=update_project(empty_project(),{
+            'business_use':{'value':'yes','evidence':'new business'},
+            'project_description':{'value':'open an office','evidence':'new business'}},'new business')
+        original=copy.deepcopy(project)
+        state=demo_session.pack({'project':project,'history':[]},'test-demo-secret')
+        payload={'state':state,'name':'Alex','email':'alex@example.com',
+                 'team':'Zoning / Certificate of Use (COU)','turnstileToken':'test',
+                 'businessGoal':'Open a downtown bakery','plannedWork':'No work planned',
+                 'leaseStatus':'considering','projectAddress':'123 Main St',
+                 'resources':[{'url':'https://untrusted.example'}]}
+        with patch.object(coordination,'verify_turnstile',return_value=True):
+            draft=coordination.prepare_coordination(payload,'127.0.0.1')
+        for expected in ('Customer name: Alex','Potential address: 123 Main St',
+                         'Business goal: Open a downtown bakery','Planned work: No work planned',
+                         'Property / lease status: Considering this property',
+                         'Downtown Overlay and Design Standards','Chapter 656',
+                         'if the address is within the applicable overlay boundary'):
+            self.assertIn(expected,draft['body'])
+        self.assertNotIn('untrusted.example',draft['body'])
+        self.assertNotIn('Certificate of Appropriateness process',draft['body'])
+        self.assertEqual(project,original)
+        self.assertEqual(demo_session.unpack(state,'test-demo-secret')['project'],original)
+        with patch.object(coordination,'verify_turnstile',return_value=True):
+            with self.assertRaisesRegex(ValueError,'lease status'):
+                coordination.prepare_coordination({**payload,'leaseStatus':'fabricated'},'127.0.0.1')
+
+    def test_missing_email_details_remain_unknown_and_historic_links_are_context(self):
+        from project_workflow import email_draft
+        project=update_project(empty_project(),{'historic_review':{'value':'yes','evidence':'historic'}},'historic')
+        brief=build_brief(project)
+        body=email_draft(project,brief,'Historic Preservation Section')['body']
+        self.assertIn('Planned work: Not yet described',body)
+        self.assertIn('Property / lease status: Not provided',body)
+        self.assertIn('Potential address: Not yet established',body)
+        self.assertIn('Listing alone does not establish a local COA requirement',body)
+        self.assertIn('this map does not determine local historic designation',body)
+        self.assertNotIn('Downtown Overlay and Design Standards',body)
+        self.assertIn('window.EMAIL_RESOURCES=',app.page_html())
+        self.assertNotIn('email_resources',brief)
 
 
 if __name__=='__main__':unittest.main()

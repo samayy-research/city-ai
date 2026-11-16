@@ -42,9 +42,30 @@ class IntakeCompletionTests(unittest.TestCase):
             ('not from the ground up', 'unknown'),
             ('maybe a new building', 'unknown'),
             ('new sinks in an existing building', 'existing_building'),
+            ('space in existing', 'existing_building'),
+            ('in existig building', 'existing_building'),
+            ('space in an existing', 'existing_building'),
+            ('maybe a space in existing', 'unknown'),
         ):
             with self.subTest(text=text):
                 self.assertEqual(construction_type(text), expected)
+
+    def test_short_existing_space_reply_prevents_repeated_building_type_question(self):
+        for statement in ('space in existing', 'in existig building'):
+            with self.subTest(statement=statement):
+                p = project(project_description='open a restaurant', project_type='unknown',
+                            interior_work='unknown')
+                p['pending_intake_field'] = 'project_type'
+                with patch.object(app, 'OPENAI_API_KEY', 'test'), patch.object(app, 'research_context', return_value={
+                        'property': {}, 'sources': [], 'fees': []}), patch.object(app, 'complete_json', side_effect=[
+                        {'updates': {}}, {'ready_for_brief': False, 'message': 'Let us confirm the building type.',
+                        'question_field': 'project_type', 'question': 'New building or existing space?'}]):
+                    result = app.openai_chat([{'role': 'user', 'text': statement}], p)
+                saved = result['project']['fields']['project_type']
+                self.assertEqual(saved['value'], 'existing_building')
+                self.assertIn(statement, saved['evidence'])
+                self.assertNotEqual(result['question_field'], 'project_type')
+                self.assertNotIn('New building or existing space?', result['message'])
 
     def test_ground_up_reply_saves_branch_without_model_and_skips_renovation_questions(self):
         p = project(project_description='opening a brand new dispensary', project_type='unknown',
@@ -155,10 +176,10 @@ class IntakeCompletionTests(unittest.TestCase):
         result = app.apply_question_policy(cou_offer(), project(site_work='not_sure', right_of_way='not_sure'))
         self.assertTrue(result['ready_for_brief'])
 
-    def test_already_asked_unknown_scope_remains_a_city_confirmation(self):
+    def test_already_asked_unknown_scope_is_still_unanswered(self):
         p = project(plumbing='unknown')
         p['intake_asked_fields'] = ['plumbing']
-        self.assertTrue(app.apply_question_policy(cou_offer(), p)['ready_for_brief'])
+        self.assertEqual(app.apply_question_policy(cou_offer(), p)['question_field'], 'plumbing')
 
     def test_missing_scope_is_asked_instead_of_cou_procedures(self):
         p = project(plumbing='unknown')
@@ -273,10 +294,10 @@ class IntakeCompletionTests(unittest.TestCase):
         self.assertEqual(result['question_field'], 'existing_use')
         self.assertIn('Certificate of Use', result['question_reason'])
 
-    def test_ordered_checklist_ignores_model_attempt_to_jump_to_parking(self):
+    def test_ai_can_choose_parking_before_other_unanswered_topics(self):
         p = project(interior_work='unknown', plumbing='unknown', specialized_review='unknown',
                     site_work='unknown', right_of_way='unknown')
-        expected = ['interior_work', 'plumbing', 'specialized_review', 'site_work', 'right_of_way']
+        expected = ['site_work', 'interior_work', 'plumbing', 'specialized_review', 'right_of_way']
         for field in expected:
             result = app.apply_question_policy({'ready_for_brief': False,
                 'question_field': 'site_work', 'question': 'Any parking changes?'}, p)

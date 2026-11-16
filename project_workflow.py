@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from historic_gis import current_historic, has_historic_flag
+from email_resources import relevant_resources
 
 RULE_BASE = json.loads(Path(__file__).with_name("routing_rules.json").read_text(encoding="utf-8"))
 RULES = RULE_BASE["rules"]
@@ -18,6 +19,7 @@ FACT_VALUES = {"yes", "no", "not_sure", "unknown"}
 CHECKLIST_ORDER = ("use", "mobility", "historic", "site", "occupancy", "building",
                    "specialty", "plumbing", "row")
 CHECKLIST_RANK = {identifier: index for index, identifier in enumerate(CHECKLIST_ORDER)}
+CHECKLIST_RANK['ash'] = CHECKLIST_RANK['historic'] + .5
 
 
 def empty_project() -> dict:
@@ -87,12 +89,13 @@ def update_project(previous: dict, updates: object, statement: str) -> dict:
 def construction_type(text: str) -> str:
     """Recognize explicit construction scope, not a new business or new lease."""
     text = re.sub(r'\bne+w+\b', 'new', text.casefold()).replace('_', ' ')
+    text = re.sub(r'\b(?:existig|exisiting)\b', 'existing', text)
     if re.search(r"\b(?:if|maybe|might|undecided|not sure|don't know)\b", text):
         return 'unknown'
     if not re.search(r'\b(?:not|no)\b[^.;,]{0,25}\b(?:new (?:building|construction|structure)|ground[ -]+up)\b', text):
         if re.search(r'\b(?:ground[ -]+up|new (?:building|construction|structure))\b', text):
             return 'new_construction'
-    if re.search(r'\b(?:existing (?:building|space)|renovat\w*|remodel\w*|tenant build[ -]?out)\b', text):
+    if re.search(r'\b(?:existing (?:building|space)|(?:space|unit|suite)\s+in\s+(?:an?\s+)?existing|renovat\w*|remodel\w*|tenant build[ -]?out)\b', text):
         return 'existing_building'
     return 'unknown'
 
@@ -143,7 +146,7 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
     conflicts = project.get("conflicts", {})
     for identifier, title, keys, decisions, optional in definitions:
         values = [fields[key]["value"] for key in keys]
-        if optional and fields["historic_review"]["value"] == "unknown" and question_field not in keys:
+        if optional and fields["historic_review"]["value"] == "unknown" and question_field not in keys and not current_historic(project):
             continue
         active = question_field in keys
         uncertain = any(key in conflicts or fields[key]["value"] == "not_sure" for key in keys)
@@ -174,6 +177,13 @@ def intake_progress(project: dict, question_field: str = "", question_reason: st
         topics.append({"id": identifier, "title": title, "status": status,
                        "status_label": ('Historic review flagged' if has_historic_flag(current_historic(project)) else 'No historic screening flags identified' if status=='excluded' else '') if identifier=='historic' and current_historic(project) else '',
                        "reason": (current_historic(project).get('reason','') + (' ' + reason if reason else '')) if identifier == 'historic' else reason})
+    ash = current_historic(project).get('ash', {})
+    if ash:
+        topics.append({'id':'ash', 'title':'Ash Site',
+                       'status':'covered' if ash['status'] == 'not_identified' else 'deferred' if plan_ready else 'uncertain',
+                       'status_label':{'identified':'Ash Site identified', 'not_identified':'No designation shown',
+                                       'requires_review':'Check incomplete'}.get(ash['status'], 'Check incomplete'),
+                       'reason':ash['reason']})
     return {"topics": topics, "covered": sum(topic["status"] in {"covered", "excluded"} for topic in topics), "total": len(topics)}
 
 
@@ -259,6 +269,19 @@ def build_brief(project: dict) -> dict:
                                  'guidance': 'Confirm the occupancy classification for the proposed activity in the new building with City staff.',
                                  'exceptions': 'A new business does not establish the technical occupancy classification.'})
     historic = current_historic(project)
+    ash = historic.get('ash', {})
+    if ash.get('status') in {'identified', 'requires_review'}:
+        steps.append({'id':'ash', 'field':'location', 'status':'unresolved',
+            'title':'Coordinate Ash Site review with the City' if ash['status'] == 'identified' else 'Confirm Ash Site status and review needs',
+            'department':'Solid Waste Division / Ash Program',
+            'request':'Could you confirm the Ash Site designation for the project parcel and the approvals or ash-management requirements for the proposed work?',
+            'outcome':'City confirmation of Ash Program involvement and applicable ash-management requirements',
+            'prerequisites':[], 'prerequisite_basis':'Location-specific agency review; City staff confirm the requirements for this scope.',
+            'evidence':[ash['reason']], 'evidence_label':'City GIS property details',
+            'source_title':ash['source_title'], 'source_url':ash['source_url'],
+            'guidance':ash['reason'], 'exceptions':'Blank or N/A map fields do not establish a soil-contamination clearance.',
+            'exception_note':'Confirm the project parcel and any suggested address before relying on the screening.',
+            'rule_version':RULE_BASE['version']})
     levels = historic.get('archaeology',{}).get('levels',[])
     if any(level.casefold() == 'high' for level in levels):
         steps.append({'id':'archaeology','field':'site_work','status':'unresolved',
@@ -322,7 +345,8 @@ def build_brief(project: dict) -> dict:
             "rules": {key: RULE_BASE[key] for key in ("version", "review_status", "sources_checked")}}
 
 
-def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_email: str = "", location: str = "", note: str = "") -> dict:
+def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_email: str = "", location: str = "", note: str = "",
+                business_goal: str = "", planned_work: str = "", lease_status: str = "") -> dict:
     """Explain the scope, screening basis and specific decisions for the selected team."""
     active = [step for step in brief["action_plan"] if step["status"] != "not_applicable" and
               (team == "Overall City coordination" or step["department"] == team)]
@@ -358,7 +382,19 @@ def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_ema
     # Each open decision gets its actual rule-derived question, without an arbitrary item limit.
     unresolved = [step for step in active if step["status"] == "unresolved"]
     routed = [step for step in active if step["status"] == "applicable"]
-    paragraphs = ["Hello,", purpose, paragraph, suggestions]
+    work = planned_work or "; ".join(value(key) for key in ("alterations", "specialty_work", "site_changes") if value(key))
+    if not work:
+        work = "Not yet described; please confirm the work planned, if any."
+    lease_labels = {"searching": "Still searching", "considering": "Considering this property",
+                    "negotiating": "Negotiating a lease", "signed": "Lease signed", "owner": "Property owner"}
+    summary = "\n".join((
+        "Customer name: " + (name or "[Your name]"),
+        "Potential address: " + (address or "Not yet established / still searching"),
+        "Business goal: " + (business_goal or value("proposed_use") or value("project_description") or "Not yet described"),
+        "Planned work: " + work,
+        "Property / lease status: " + lease_labels.get(lease_status, "Not provided; please confirm whether a lease is signed or the customer is still looking."),
+    ))
+    paragraphs = [summary, "Hello,", purpose, paragraph, suggestions]
     for heading, selected in (("Open questions to resolve:", unresolved),
                               ("Please also confirm the suggested review steps:", routed)):
         if selected:
@@ -372,6 +408,10 @@ def email_draft(project: dict, brief: dict, team: str, name: str = "", reply_ema
     paragraphs.append("Please advise which documents, plans or additional project details your team needs to answer these questions, and the appropriate next step before submission. If a question belongs with another team, please direct me to the appropriate contact.")
     if note:
         paragraphs.append("Additional context: " + compact(note, 240))
+    resources = relevant_resources(active, " ".join((address, scope, business_goal, planned_work, note)))
+    if resources:
+        paragraphs.append("Relevant official resources (for reference; applicability remains subject to City confirmation):\n" +
+                          "\n\n".join(resource["title"] + "\n" + resource["description"] + "\n" + resource["url"] for resource in resources))
     paragraphs.append("Thank you,\n" + (name or "[Your name]") + ("\n" + reply_email if reply_email else ""))
     proposed = value("proposed_use") or "project scope"
     return {"subject": "Preliminary permit routing — " + proposed[:80], "body": "\n\n".join(paragraphs), "team": team}

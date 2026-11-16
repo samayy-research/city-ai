@@ -187,6 +187,7 @@ function bubble(text, kind = 'assistant', citations = []) {
   return el;
 }
 function contact(group) {
+  if (group.startsWith('Solid Waste')) return {email:'',url:'https://www.jacksonville.gov/departments/office-of-administrative-services/solid-waste'};
   if (group.startsWith('Jacksonville Fire') || group.startsWith('Fire')) return {email:'JohnsonC@coj.net',url:'https://www.jacksonville.gov/departments/fire-and-rescue'};
   if (group.startsWith('Historic')) return {email:'HistoricPreservation@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/community-planning-division/historic-preservation-section'};
   if (group.startsWith('Concurrency')) return {email:'KimberlyG@coj.net',url:'https://www.jacksonville.gov/departments/planning-department/transportation-planning/concurrency-and-mobility-management-system-office'};
@@ -207,7 +208,7 @@ function checklistTitle(step) {
   const titles = {use:'Zoning & Certificate of Use (COU)', occupancy:'Occupancy & converting-use review',
     building:'Building permit', plumbing:'Plumbing permit', site:'Site development & parking',
     row:'Right-of-way & access', specialty:'Specialty & agency review', historic:'Historic preservation',
-    archaeology:'Archaeological review', mobility:'Mobility review & fees'};
+    archaeology:'Archaeological review', ash:'Ash Site coordination', mobility:'Mobility review & fees'};
   const title = step.title.replace(/^(?:Resolve whether to )?(?:confirm )?/i, '');
   return titles[step.id] || title.charAt(0).toUpperCase() + title.slice(1);
 }
@@ -247,7 +248,7 @@ function historicCard(expanded = false) {
   const finding = currentProject?.research?.historic;
   if (!finding || finding.query !== currentProject?.fields?.location?.value) return null;
   const card = node('section', '', 'historic-card');
-  card.append(node('h3', 'Historic & archaeological checks'));
+  card.append(node('h3', 'Historic, archaeological & Ash Site checks'));
   if (finding.resolved_address) card.append(node('p', (finding.address_match === 'nearest' ? 'Closest street-number match: ' : finding.address_confirmation_required ? 'Suggested address: ' : 'Screened address: ') + finding.resolved_address));
   if (finding.address_confirmation_required) card.append(node('p', 'Confirm the address before relying on these location-specific results.'));
   const historicFlag = finding.historic_flag || finding.local_status === 'designated' || finding.screening_checks?.some(check => check.status === 'identified') || finding.archaeology?.levels?.some(level => level.toLowerCase() === 'high');
@@ -257,6 +258,16 @@ function historicCard(expanded = false) {
   if (archaeology?.levels?.some(level => level.toLowerCase() === 'high')) card.append(node('strong', 'Archaeological sensitivity: High'));
   else if (archaeology?.status === 'requires_review') card.append(node('strong', 'Archaeological sensitivity check incomplete'));
   card.append(node('p', finding.reason));
+  const ash = finding.ash;
+  if (ash) {
+    card.append(node('strong', ash.status === 'identified' ? 'Ash Site: ' + ash.names.join(', ') : ash.status === 'not_identified' ? 'Ash Site: N/A / no designation shown' : 'Ash Site: Check incomplete'));
+    card.append(node('p', ash.reason));
+    const details = node('details');
+    details.append(node('summary', 'View Ash Site property details'));
+    const list = node('ul');
+    (ash.records || []).forEach(record => list.append(node('li', record.record + ' — ' + record.field + ': ' + (record.display_value || 'Check incomplete'))));
+    details.append(list); card.append(details);
+  }
   if (finding.screening_checks?.length) {
     const details = node('details'); details.open = expanded;
     details.append(node('summary', 'View screening checklist'));
@@ -271,7 +282,7 @@ function historicCard(expanded = false) {
   const matches = [...new Set((finding.parcels || []).flatMap(parcel => parcel.checks.flatMap(check => (check.matches || []).map(match => match.LANDMARK_N || match.RESNAME || match.SITENAME || match.NAME || '').filter(Boolean))))];
   if (matches.length) card.append(node('p', 'Records: ' + matches.join('; ')));
   if (finding.parcels?.length) card.append(node('p', 'Parcel(s): ' + finding.parcels.map(parcel => parcel.parcel).join(', ')));
-  card.append(node('p', 'Checked ' + new Date(finding.checked_at).toLocaleString(), 'source'), link('View the City historic map', finding.source_url));
+  card.append(node('p', 'Checked ' + new Date(finding.checked_at).toLocaleString(), 'source'), link('View the City review map', finding.source_url));
   return card;
 }
 function renderBrief(brief) {
@@ -367,6 +378,7 @@ function coordinationForm(container, brief) {
   const section = node('section', '', 'email-section');
   section.append(node('h3', 'Prepare a City email'), node('p', 'Use this draft to ask the relevant City department about open questions and what to prepare before submission. It includes your project scope, the advisor’s preliminary suggestions, and specific questions for the department you select. Review the draft, then open it in your email app to send.'));
   const emailForm = node('form', '', 'coordination-form');
+  emailForm.append(node('p','Review the details for your email. If your project plans have changed, update the conversation first so the checklist and draft stay consistent.'));
   function field(title, name, type='text', required=false) {
     const label=node('label', title);
     const el=node(type === 'textarea' ? 'textarea' : 'input'); el.name=name;
@@ -375,15 +387,41 @@ function coordinationForm(container, brief) {
     if(type === 'textarea') {el.rows=3; el.maxLength=500;}
     label.append(el); emailForm.append(label); return el;
   }
-  const name=field('Your name','applicantName','text',true); name.autocomplete='name';
+  const name=field('Customer name','applicantName','text',true); name.autocomplete='name';
   const email=field('Your email','applicantEmail','email',true); email.autocomplete='email';
-  const address=field('Project location (optional)','projectAddress'); address.maxLength=300;
+  const address=field('Potential address (optional if still searching)','projectAddress'); address.maxLength=300;
   address.value=['unknown','not_sure'].includes(currentProject?.fields.location.value) ? '' : currentProject?.fields.location.value || '';
+  const knownValue=key=>['unknown','not_sure',undefined].includes(currentProject?.fields[key]?.value) ? '' : currentProject.fields[key].value;
+  const businessGoal=field('What type of business would you like to open or operate?','businessGoal','textarea');
+  businessGoal.value=(knownValue('proposed_use') || knownValue('project_description')).slice(0,500);
+  const plannedWork=field('What work are you planning, if any?','plannedWork','textarea');
+  plannedWork.placeholder='Describe renovations, signs, exterior or site changes; or enter No work planned / Undecided.';
+  plannedWork.value=['alterations','specialty_work','site_changes'].map(knownValue).filter(Boolean).join('; ').slice(0,500);
+  const leaseLabel=node('label','Have you signed a lease, or are you still looking?');
+  const leaseStatus=node('select'); leaseStatus.name='leaseStatus';
+  for(const [value,title] of [['','Not provided / undecided'],['searching','Still searching'],['considering','Considering this property'],['negotiating','Negotiating a lease'],['signed','Lease signed'],['owner','Property owner']]) {
+    const option=node('option',title); option.value=value; leaseStatus.append(option);
+  }
+  leaseLabel.append(leaseStatus); emailForm.append(leaseLabel);
   const label=node('label','Who should review this request?'); const select=node('select');
-  for(const group of brief.city_conversations) {const option=node('option',group.group); option.value=group.group; select.append(option);}
+  for(const group of brief.city_conversations) {
+    const option=node('option',group.group); option.value=group.group;
+    if (group.group.startsWith('Solid Waste')) {
+      option.disabled=true; option.textContent += ' — use official contact link';
+    }
+    select.append(option);
+  }
   const overall=node('option','Overall City coordination'); overall.value='Overall City coordination'; select.append(overall);
   label.append(select); emailForm.append(label);
   const note=field('Additional context (optional)','note','textarea');
+  const references=node('details'); references.append(node('summary','Official resources and when they apply'));
+  references.append(node('p','Relevant references will be included in your draft. Downtown boundaries and historic designation require confirmation.'));
+  const resources=node('ul');
+  for(const resource of window.EMAIL_RESOURCES || []) {
+    const item=node('li'); const link=node('a',resource.title); link.href=resource.url; link.target='_blank'; link.rel='noopener noreferrer';
+    item.append(link,node('p',resource.description)); resources.append(item);
+  }
+  references.append(resources); emailForm.append(references);
   const preview=node('div','','email-preview');
   const previewStatus=node('p','','coordination-notice'); previewStatus.setAttribute('role','status');
   const widget=node('div','','turnstile-widget');
@@ -409,7 +447,7 @@ function coordinationForm(container, brief) {
     if(!token){previewStatus.textContent='Complete the security verification first.';return;}
     button.disabled=true; button.textContent='Preparing draft…'; open.hidden=true;
     try {
-      const response=await fetch('/api/coordination-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(persistentMode?{projectId}:{state:demoState}),name:name.value,email:email.value,projectAddress:address.value,note:note.value,team:select.value,turnstileToken:token})});
+      const response=await fetch('/api/coordination-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(persistentMode?{projectId}:{state:demoState}),name:name.value,email:email.value,projectAddress:address.value,businessGoal:businessGoal.value,plannedWork:plannedWork.value,leaseStatus:leaseStatus.value,note:note.value,team:select.value,turnstileToken:token})});
       const result=await response.json(); if(!response.ok)throw Error(result.error || 'Unable to prepare the email.');
       preview.textContent=''; preview.append(node('strong',result.subject),node('pre',result.body));
       open.href=result.mailtoUrl; open.hidden=false; previewStatus.textContent='Review the draft, then open it in your email app. Nothing has been sent.';

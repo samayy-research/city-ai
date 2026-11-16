@@ -234,6 +234,8 @@ def research_context(project: dict, statement: str, cache_property: bool=True) -
         reuse_historic = previous_historic.get('schema_version') == SCHEMA_VERSION and previous_historic.get('query') == location and (datetime.now(timezone.utc) - datetime.fromisoformat(previous_historic['checked_at'])).total_seconds() < (3600 if previous_historic.get('local_status') != 'requires_review' else 300)
     except (KeyError, ValueError, TypeError):
         pass
+    if project.get('conversation', {}).get('turn_intent') == 'research':
+        reuse_historic = False
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {key:executor.submit(source_record,key) for key in keys}
         property_future = executor.submit(lookup_property,location,cache_property) if location != "unknown" else None
@@ -243,7 +245,7 @@ def research_context(project: dict, statement: str, cache_property: bool=True) -
         historic = historic_future.result() if historic_future else previous_historic if reuse_historic else {}
     if historic:
         sources.append({'id':'historic-gis','title':'City historic GIS screening','url':historic['source_url'],
-                        'status':'available','excerpt':historic['reason'],'checked_at':historic['checked_at']})
+                        'status':'available','excerpt':historic['reason'] + ' ' + historic.get('ash', {}).get('reason', ''),'checked_at':historic['checked_at']})
     return {"sources":sources, "property":property_result, "historic":historic, "fees":[fee for source in sources for fee in source.get("fees", [])]}
 
 
@@ -253,7 +255,7 @@ def compose_response(result: dict, context: dict, disclosed_fee_ids: tuple[str, 
         raise ValueError("The advisor returned an invalid reply. Please retry.")
     if "$" in message or "$" in question:
         raise ValueError("The advisor could not verify a quoted fee. Please retry.")
-    if not result["ready_for_brief"] and not question.strip():
+    if not result["ready_for_brief"] and not question.strip() and result.get('conversation_action') != 'respond':
         raise ValueError("The advisor did not provide a follow-up question. Please retry.")
     if result["ready_for_brief"] and question.strip():
         raise ValueError("The advisor returned inconsistent follow-up state. Please retry.")

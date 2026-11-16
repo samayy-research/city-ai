@@ -19,7 +19,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 import app
-from historic_gis import LAYERS
+from historic_gis import LAYERS, screen_ash
 import coordination
 from project_workflow import build_brief, routing_facts, update_project
 
@@ -142,6 +142,8 @@ window.addEventListener('load',async()=>{
     check(document.querySelector('#historic-result .historic-card').textContent.includes('Local historic designation identified'),'Render the automatic historic finding');
     check(document.querySelector('#historic-result .historic-card').textContent.includes('Archaeological sensitivity: High'),'Show the High archaeological flag');
     check(document.querySelector('#historic-result .historic-card').textContent.includes('Historic review: Flagged'),'Show the overall historic flag');
+    check(document.querySelector('#historic-result .historic-card').textContent.includes('Ash Site: TestAsh'),'Render the separate Ash Site property detail');
+    check(document.querySelector('[data-topic="ash"]').textContent.includes('Ash Site identified'),'Keep Ash status separate from Historic');
     check(document.querySelectorAll('#historic-result .historic-screening-list li').length===6,'Show all historic screening categories');
     check(document.querySelector('[data-topic="site"]').nextElementSibling.dataset.topic==='historic','Historic topic follows Site and parking');
     check(document.querySelector('[data-topic="historic"] #historic-result'),'Keep historic site details under the historic topic');
@@ -168,6 +170,8 @@ window.addEventListener('load',async()=>{
     check([...document.querySelectorAll('.plan-step .status-pill')].every(pill=>pill.textContent===(pill.classList.contains('unresolved')?'Needs clarification':'Likely needed')),'Explain checklist status in words');
     check([...document.querySelectorAll('.plan-step')].every(row=>!row.querySelector('.status-pill.unresolved') || row.querySelector('.clarification-note')?.textContent),'Explain what unresolved checklist items need');
     check(document.querySelector('.historic-site-details .historic-card'),'Keep report site details with the historic checklist item');
+    check([...document.querySelectorAll('.plan-step')].some(row=>row.textContent.includes('Solid Waste Division / Ash Program')),'Include Ash Program coordination in the report');
+    check([...document.querySelectorAll('.conversation-cards a')].some(link=>link.href.includes('/solid-waste')),'Link Ash coordination to Solid Waste information');
     check(document.querySelector('.open-topics').textContent.includes('Still to confirm'),'Explain incomplete topics alongside the preliminary report');
     check(document.querySelectorAll('.topic.deferred').length > 0,'Unfinished topics become explicit City confirmations');
     check(!document.querySelector('.topic.pending'),'A ready plan should not leave unexplained pending topics');
@@ -191,7 +195,14 @@ window.addEventListener('load',async()=>{
     check(pilotFeedbackBody('').includes('Current checklist'),'Pilot feedback includes the resulting checklist as well as the conversation');
     email.elements.applicantName.value='Test Applicant';
     email.elements.applicantEmail.value='applicant@example.com';
+    check(email.elements.businessGoal.value.length > 0,'Prefill the business goal from the project');
+    check(email.querySelectorAll('details a').length === 7,'Make all seven official references available');
+    email.elements.plannedWork.value='No work planned';
+    email.elements.leaseStatus.value='searching';
     await email.onsubmit({preventDefault(){}});
+    check(document.querySelector('.email-preview').textContent.includes('Customer name: Test Applicant'),'Include the customer summary');
+    check(document.querySelector('.email-preview').textContent.includes('Planned work: No work planned'),'Include explicit work details');
+    check(document.querySelector('.email-preview').textContent.includes('Property / lease status: Still searching'),'Include the selected lease status');
     check(document.querySelector('.email-preview').textContent.includes('Jax Project Advisor'),'Preview must include relevant suggestions');
     check(!document.querySelector('.email-open').hidden,'Reviewed draft must offer an email action');
     check(!document.querySelector('.email-preview').textContent.toLowerCase().includes('checklist'),'Do not dump the checklist');
@@ -269,6 +280,9 @@ def fake_model(history, project):
         'archaeology':{'levels':['High','Medium','Low'],'flagged':True,'status':'identified','source_url':'https://maps.coj.net/landdevelopmentreview/images/HELP_LayerInformation.pdf'},
         'screening_checks':[{'layer':key,'title':name+' (High only)' if key==40 else name,'status':'identified' if key in (40,43) else 'not_identified','complete':True} for key,name in LAYERS.items()],
         'parcels':[{'parcel':'073753 0000','checks':[{'matches':[{'LANDMARK_N':'St. James Building'}]}]}]}}
+    updated['research']['historic']['ash'] = screen_ash(
+        [{'attributes': {'RE':'073753 0000', 'ASH_NAME':'TestAsh'}}],
+        [{'attributes': {'ADDRESS':'117 DUVAL ST W', 'ASHSITE':'TestAsh'}}], True)
     return app.workspace_result({"stage":"final" if ready else "follow_up", "message":answer, "project":updated,
             "citations":[{"id":"historic-gis","title":"City historic GIS screening","url":"https://maps.coj.net/landdevelopmentreview/"}],
             "question_field":"interior_work" if not ready else "", "question_reason":"The proposed work helps identify the building review route." if not ready else "",

@@ -70,8 +70,14 @@ def prepare_coordination(data: dict, remote_ip: str) -> dict:
         raise ValueError("Choose a department from the project action plan.")
     if not valid_email(recipient):
         raise RuntimeError("The City coordination inbox has not been configured yet.")
-    draft = email_draft(project, brief, team, name, email, text(data.get("projectAddress"), 300), text(data.get("note"), 500))
-    # Ignore any client checklist, route, recipient or fabricated project details.
+    lease_status = text(data.get("leaseStatus"), 30)
+    if lease_status and lease_status not in {"searching", "considering", "negotiating", "signed", "owner"}:
+        raise ValueError("Choose a valid property / lease status.")
+    draft = email_draft(project, brief, team, name, email, text(data.get("projectAddress"), 300), text(data.get("note"), 500),
+                        business_goal=text(data.get("businessGoal"), 500), planned_work=text(data.get("plannedWork"), 500),
+                        lease_status=lease_status)
+    # Email-only applicant context does not change the saved plan or routing.
+    # Ignore any client checklist, route, recipient or resource links.
     draft["mailtoUrl"] = "mailto:" + urllib.parse.quote(recipient) + "?" + urllib.parse.urlencode(
         {"subject": draft["subject"], "body": draft["body"]}, quote_via=urllib.parse.quote)
     return draft

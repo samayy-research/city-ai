@@ -14,7 +14,7 @@ import urllib.request
 
 MAP_URL = 'https://maps.coj.net/landdevelopmentreview/'
 PROXY = MAP_URL + 'duval.ashx?HTTPS://CMVXDWVZDA.QQQ/Z1'
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LAYERS = {40:'Archaeological Sensitivity', 41:'Cemeteries', 42:'National Register Historic Districts/Properties', 43:'Local Landmarks',
           44:'Local Historic Districts', 45:'Florida Master Site File - Historic Structures'}
 
@@ -122,7 +122,7 @@ def nearest_address(location, features):
 def find_parcels(opener, location, number):
     address = normalized_address(location)
     where = "RE = '" + number[1] + ' ' + number[2] + "'" if number else "LONGNAME = '" + address.replace("'", "''") + "'"
-    params = {'where': where, 'outFields': 'RE,LONGNAME', 'returnGeometry': 'true', 'outSR': '3857'}
+    params = {'where': where, 'outFields': 'RE,LONGNAME,ASH_NAME', 'returnGeometry': 'true', 'outSR': '3857'}
     parcels = _features(opener, 1, params)
     if parcels['features'] or number:
         addresses = sorted({feature.get('attributes', {}).get('LONGNAME', '') for feature in parcels['features']})
@@ -201,13 +201,55 @@ def has_historic_flag(finding):
             or any(check.get('layer') in (41,42,43,44,45) and check.get('count',0)>0 for parcel in finding.get('parcels',[]) for check in parcel.get('checks',[])))
 
 
+def screen_ash(parcels, addresses, address_complete=False):
+    """Read the map's property-details attributes, independently of historic flags."""
+    records = []
+    for features, field, identity in ((parcels, 'ASH_NAME', 'RE'), (addresses, 'ASHSITE', 'ADDRESS')):
+        for feature in features:
+            attributes = feature.get('attributes', {})
+            if field not in attributes:
+                records.append({'record': attributes.get(identity, ''), 'field': field, 'status': 'requires_review'})
+                continue
+            raw = attributes[field]
+            value = str(raw).strip() if raw is not None else ''
+            identified = bool(value and value.upper() not in {'N/A', 'NA', 'NONE', 'NOT APPLICABLE'})
+            records.append({'record': attributes.get(identity, ''), 'field': field, 'raw_value': raw,
+                            'display_value': value or 'N/A', 'status': 'identified' if identified else 'not_identified'})
+    names = sorted({record['display_value'] for record in records if record['status'] == 'identified'})
+    complete = bool(parcels and addresses and address_complete) and all(record['status'] != 'requires_review' for record in records)
+    status = 'identified' if names else 'not_identified' if complete else 'requires_review'
+    reason = ('City map Ash Site designation: ' + ', '.join(names) + '. Coordinate the proposed work with the City Solid Waste Division / Ash Program before proceeding.' if names else
+              'The City map Ash Site fields show N/A or blank; no designation is shown in the checked records. This is a map finding, not a soil-contamination clearance.' if complete else
+              'The City map Ash Site fields could not be checked completely; Ash Program involvement remains unresolved.')
+    if names and not complete:
+        reason += ' Some property-details records could not be checked.'
+    return {'status': status, 'complete': complete, 'names': names, 'records': records,
+            'source_url': MAP_URL, 'source_title': 'City map property details: Ash Site (ASHSITE / ASH_NAME)', 'reason': reason}
+
+
+def lookup_ash(opener, parcels, names):
+    addresses = sorted({feature.get('attributes', {}).get('LONGNAME', '') for feature in parcels} - {''})
+    address_features, complete = [], False
+    if names.get(4) == 'Address Point' and addresses:
+        try:
+            where = ' OR '.join("ADDRESS = '" + address.replace("'", "''") + "'" for address in addresses)
+            address_features = _features(opener, 4, {'where': where, 'outFields': 'ADDRESS,ASHSITE',
+                'returnGeometry': 'false', 'resultRecordCount': 201})['features']
+            if len(address_features) > 200:
+                address_features = []
+            complete = set(addresses).issubset({feature.get('attributes', {}).get('ADDRESS') for feature in address_features})
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return screen_ash(parcels, address_features, complete)
+
+
 def lookup_historic(location):
     result = {'query':location, 'source_url':MAP_URL, 'source_title':'City historic GIS screening',
               'schema_version':SCHEMA_VERSION,
               'historic_flag':False, 'historic_status':'requires_review',
               'screening_checks':screening_checks([]),
               'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),
-              'status':'requires_review', 'local_status':'requires_review', 'parcels':[]}
+              'status':'requires_review', 'local_status':'requires_review', 'parcels':[], 'ash':screen_ash([], [])}
     number = re.fullmatch(r'\s*(\d{6})[- ]?(\d{4})\s*', location)
     address = normalized_address(location)
     if not number and not re.match(r'^\d+\s+[A-Z]', address):
@@ -230,6 +272,10 @@ def lookup_historic(location):
             return {**result, 'reason':'No unique parcel address could be established. Confirm the street address or provide the real estate number.'}
         if len(parcels['features']) > 4:
             return {**result, 'reason':'The address matches too many parcels for a reliable automatic check.'}
+        result['ash'] = lookup_ash(opener, parcels['features'], names)
+        if result.get('address_confirmation_required'):
+            result['ash']['address_confirmation_required'] = True
+            result['ash']['reason'] = 'Confirm the suggested address before relying on this Ash Site screening. ' + result['ash']['reason']
 
         def check(parcel, layer):
             geometry = parcel.get('geometry')

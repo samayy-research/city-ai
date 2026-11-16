@@ -169,8 +169,10 @@ class AddressResolutionTests(unittest.TestCase):
         statement = 'I am building a new restaurant at 701 San Maroi'
         with patch.object(app, 'OPENAI_API_KEY', 'test'), patch.object(app, 'complete_json', side_effect=[
                 {'updates': {'location': {'value': '701 San Maroi', 'evidence': '701 San Maroi'}, 'project_description': {'value': 'building a new restaurant', 'evidence': 'building a new restaurant'}}},
-                {'ready_for_brief': True, 'message': 'Project recorded.', 'question': ''}]), patch.object(app, 'research_context', return_value={
-                    'sources': [], 'fees': [], 'property': {}, 'historic': finding}):
+                {'ready_for_brief': True, 'message': 'The suggested address needs confirmation; this screening is provisional.',
+                 'question': '', 'source_ids': ['historic-gis']}]), patch.object(app, 'research_context', return_value={
+                    'sources': [{'id': 'historic-gis', 'title': 'City historic GIS screening', 'status': 'available',
+                                 'url': finding['source_url']}], 'fees': [], 'property': {}, 'historic': finding}):
             result = app.openai_chat([{'role': 'user', 'text': statement}], empty_project())
         self.assertEqual(result['stage'], 'follow_up')
         self.assertEqual(result['question_field'], 'location')

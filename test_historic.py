@@ -155,12 +155,16 @@ class HistoricTests(unittest.TestCase):
     def test_model_reply_gets_gis_facts_and_exterior_followup(self):
         record=project()
         historic=finding(record)
-        context={'historic':historic, 'property':{}, 'sources':[], 'fees':[]}
-        with patch.object(app,'OPENAI_API_KEY','test'),patch.object(app,'research_context',return_value=context),patch.object(app,'complete_json',side_effect=[{'updates':{}},{'message':'Your preliminary plan is ready.','ready_for_brief':True,'question':''}]) as model:
+        context={'historic':historic, 'property':{}, 'sources':[{'id':'historic-gis', 'status':'available',
+                 'title':'City historic GIS screening', 'url':historic['source_url']}], 'fees':[]}
+        response = {'message':'The City map identifies a local historic designation. Exterior changes need staff confirmation.',
+                    'ready_for_brief':False, 'question_field':'exterior_work', 'question':'Will you change the outside of the building?',
+                    'source_ids':['historic-gis']}
+        with patch.object(app,'OPENAI_API_KEY','test'),patch.object(app,'research_context',return_value=context),patch.object(app,'complete_json',side_effect=[{'updates':{}},response]) as model:
             result=app.openai_chat([{'role':'user','text':'Please continue.'}],record)
         self.assertEqual(result['question_field'],'exterior_work')
         self.assertEqual(result['stage'],'follow_up')
-        self.assertIn('City map identifies a local historic designation',result['message'])
+        self.assertEqual(result['message'], response['message'] + '\n\n' + response['question'])
         self.assertIn('historic-gis',[source['id'] for source in result['citations']])
         self.assertEqual(result['project']['fields']['historic_review']['value'],'unknown')
         self.assertIn('research',model.call_args.args[0][1]['content'])

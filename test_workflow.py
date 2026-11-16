@@ -171,9 +171,9 @@ class WorkflowTests(unittest.TestCase):
         draft = email_draft(record, build_brief(record), "Zoning / Certificate of Use (COU)", "Applicant", "applicant@example.com")
         self.assertIn("office", draft["body"])
         self.assertIn("Jax Project Advisor", draft["body"])
-        self.assertNotIn("driveway", draft["body"])
+        self.assertIn("Planned work: interior partitions; a new driveway", draft["body"])
         self.assertNotIn("checklist", draft["body"].lower())
-        self.assertEqual(draft["body"].count("?"), 1)
+        self.assertEqual(draft["body"].split("Relevant official resources")[0].count("?"), 1)
         self.assertIn("seeking preliminary guidance from Zoning", draft["body"])
         self.assertIn("not City determinations", draft["body"])
         self.assertIn("Based on:", draft["body"])
@@ -303,11 +303,12 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertIn("plumbing", result["question"])
         self.assertNotIn("plan is ready", result["message"])
 
-    def test_policy_does_not_repeat_asked_fields_or_explicit_uncertainty(self):
+    def test_asked_unknown_stays_open_but_explicit_uncertainty_is_respected(self):
         record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"not_sure", "interior_work":"no", "plumbing":"not_sure", "specialized_review":"no", "site_work":"no"})
         record["intake_asked_fields"] = ["right_of_way"]
         result = app.apply_question_policy({"ready_for_brief":True}, record)
-        self.assertTrue(result["ready_for_brief"])
+        self.assertFalse(result["ready_for_brief"])
+        self.assertEqual(result['question_field'], 'right_of_way')
 
     def test_unknown_site_scope_gets_a_plain_language_followup(self):
         record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"701 San Marco", "interior_work":"no", "plumbing":"no", "specialized_review":"no"})
@@ -323,7 +324,7 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertEqual({topic["id"] for topic in open_topics}, {"building", "specialty", "site"})
         self.assertTrue(all(topic["reason"] for topic in open_topics))
 
-    def test_provider_followup_is_remembered_and_not_asked_again(self):
+    def test_provider_followup_remains_pending_until_answered(self):
         record = project({"project_type":"existing_building", "project_description":"restaurant", "location":"701 San Marco", "interior_work":"no"})
         with patch.object(app, "OPENAI_API_KEY", "test"), patch.object(app, "complete_json", side_effect=[{"updates":{}}, {"ready_for_brief":True, "message":"Your plan is ready.", "source_ids":[]}]), patch.object(app, "research_context", return_value={"sources":[], "fees":[], "property":{"status":"needs_address"}}):
             result = app.openai_chat([{"role":"user", "text":"Please continue."}], record)
@@ -331,7 +332,7 @@ class IntakeProgressTests(unittest.TestCase):
         self.assertIsNone(result["brief"])
         self.assertIn("plumbing", result["project"]["intake_asked_fields"])
         followup = app.apply_question_policy({"ready_for_brief":True}, result["project"])
-        self.assertEqual(followup["question_field"], "specialized_review")
+        self.assertEqual(followup["question_field"], "plumbing")
 
     def test_coverage_requires_decisions_and_never_infers_fire_from_cooking(self):
         record = project({"project_description":"restaurant conversion", "business_use":"yes", "proposed_use":"restaurant", "cooking_method":"gas"})
